@@ -119,7 +119,7 @@ As a new user, I want to create an account and sign in so I can access the app (
 **Story Points:** 3
 **Traces to:** FR-1, FR-2, FR-3, FR-4, FR-9
 
-**Status:** Done (commit pending)
+**Status:** Done (commit `4210a02`)
 
 ---
 

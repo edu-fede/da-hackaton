@@ -232,3 +232,78 @@ The plan-mode discipline paid off again: every design decision was logged on the
 - **Story 1.4 — Register & login endpoints (REST).** Schema is now in place; next is the first real user-facing feature (POST `/api/auth/register`, POST `/api/auth/login`). Prerequisites resolved: Decision §5 (password policy: ≥8 chars, ≥1 letter + 1 digit, server-side), Decision §6 (rate-limiting out of scope — add README note). Open risk already flagged at 21:49: Story 1.4 tests MUST include the case-conflict assertion (register `Juan@x.com` then `juan@x.com` → 409) to pin the normalization contract that the DB is not enforcing.
 
 ---
+
+### [2026-04-18 22:23 ART] Note — Insight
+
+Companion observation to the 14:34 note on `/process-task` — the **user-story generation half** of that run deserves its own entry, because the quality is what actually determines whether the spec is usable downstream.
+
+What landed in `docs/stories.md` in a single pass:
+
+- **Jira-native format.** Each story is already shaped for create/update via the Atlassian Rovo MCP — summary, description, type, priority, story-point estimate, acceptance criteria as a checklist, and parent/epic linkage. No reshaping needed before pushing tickets; the MCP call is basically a for-loop over the file.
+- **Estimates that survived first contact.** The point estimates felt reasonable on read and have held up against actuals so far — Story 1.3 was estimated 2pts / ~1h, came in at ~25min wall clock (inside the envelope, not wildly off). A few stories have already had their estimates stress-tested in earlier journal entries, and the reasoning behind them was sound.
+- **Priority genuinely reflects the MVP framing from the task.** The first ~16 stories are marked High and, taken together, cover exactly the MVP acceptance criteria the task author called out as the minimum bar. The rest ladder down to Medium/Low by feature weight, not alphabetically or by section order. That's the kind of judgement call I'd expect to argue about in a grooming session, and the agent just… got it right.
+- **Descriptions, traceability, and ACs are the real win.** Every story back-links to the FR/NFR IDs from `requirements.md` (which themselves back-link to task sections), so from any story I can walk the chain: story → requirement → original task clause. ACs are concrete and testable, not hand-wavy ("user sees message" vs "POST returns 201 with `{id, createdAt}` and the message appears in the room within 3s").
+
+This is where the ADLC leverage compounds: `/process-task` didn't just produce a spec, it produced a spec that's **directly executable** by the rest of the pipeline (`/add-feature` reads it, the Jira MCP can ingest it, the journal cross-references it). The investment in the command's prompt paid for itself on turn one.
+
+---
+
+## [2026-04-18 19:29 ART] — Register + login endpoints with session cookies
+
+**Story:** Story 1.4 — Register & login endpoints (REST)
+**Commit:** `4210a02` — feat(api,security): register + login endpoints with session cookies
+
+### What was built
+`POST /api/auth/register` and `POST /api/auth/login`. Register validates the password policy (≥8 chars + ≥1 letter + ≥1 digit, per Decision §5), normalizes email and username to lowercase, hashes the password with ASP.NET Core's `PasswordHasher<User>` (PBKDF2-SHA256, random salt, 100K iterations — shipped in the shared framework, no NuGet added), persists the user, and returns `201` with a `UserSummary`. Login looks up the user by normalized email, verifies the hash, creates a `Session` row (carrying `UserAgent` and `RemoteIp` derived server-side from the request per Decision §4), issues an opaque `Guid` session token returned in the body AND as an HTTP-only `session` cookie (`SameSite=Lax`, 30-day expiry, `Secure` auto-on under HTTPS). Duplicate email/username — including case variants — are caught from Npgsql's `SQLSTATE 23505` and translated to `409 ProblemDetails` identifying the offending field. Wrong password AND unknown email both return `401` to avoid account enumeration. The README gains a "Known limitations" section documenting the deliberate omission of rate limiting (Decision §6).
+
+### ADLC traceability
+- **Requirements satisfied:** FR-1 (self-registration), FR-2 (unique email — enforced via DB index AND service-layer lowercasing), FR-3 (unique username, same), FR-4 (login with email+password), FR-9 (password stored only as hash). Also NFR-16 (RFC 9457 `ProblemDetails` for errors — every failure path returns a well-shaped problem document with the right `Content-Type: application/problem+json`).
+- **AC status:** all 5 acceptance criteria in §Story 1.4 now `[x]`. `**Status:** Done (commit 4210a02)` appended.
+- **Decisions resolved:** §5 (password policy implemented exactly as specified in `PasswordPolicy.TryValidate`), §6 (rate limiting out of scope — README note), §4 (session UA/IP derived server-side from `HttpContext.Request.Headers.UserAgent` and `HttpContext.Connection.RemoteIpAddress`).
+- **Pre-flagged risk from journal 21:49 closed:** case-insensitive uniqueness is now covered by two dedicated tests (`Register_duplicate_email_is_case_insensitive`, `Register_duplicate_username_is_case_insensitive`). The contract is service-layer normalization, pinned by tests.
+
+### Non-obvious decisions
+- **Decision:** Use ASP.NET Core's `PasswordHasher<User>` from the shared framework, not a NuGet package.
+  **Alternatives considered:** `Microsoft.Extensions.Identity.Core` as an explicit `PackageReference`; a BCrypt library (`BCrypt.Net-Next`); Argon2id via `Konscious.Security.Cryptography.Argon2`; a hand-rolled PBKDF2 using `Rfc2898DeriveBytes.Pbkdf2`.
+  **Why:** `.NET 10`'s `Microsoft.AspNetCore.App` shared framework already ships `PasswordHasher<TUser>` — adding the package raises NU1510 (prune warning) because the types are duplicated. PBKDF2-SHA256 + 100K iterations + 128-bit salt is strong enough for this scale, and using the framework hasher means one fewer dependency to version-bump. The initial attempt to add the explicit package produced the warning and was reverted.
+- **Decision:** Lazy (scope-resolved) connection string for `AddDbContext` — switched `AddDbContext<AppDbContext>(options => …)` to `AddDbContext<AppDbContext>((sp, options) => …)` so the connection string is read via `IConfiguration` at context-resolve time.
+  **Alternatives considered:** set `ConnectionStrings__Default` as a process environment variable in the test; use `IWebHostBuilder.UseSetting(...)`; override config via `WebApplicationFactory.ConfigureHostConfiguration`.
+  **Why:** the eager-read version captured `null` in the test host because `WebApplicationFactory.ConfigureAppConfiguration(...)` merges its in-memory provider AFTER `Program.cs`'s `GetConnectionString("Default")` executed at registration time. Env vars work but pollute process state across parallel tests. `UseSetting` works but is opaque. The lazy factory is a cleaner, no-magic pattern that will also pay off for every future `WebApplicationFactory`-backed test.
+- **Decision:** Normalize email AND username to `Trim().ToLowerInvariant()` at the service boundary, and store the lowercase form as the only representation.
+  **Alternatives considered:** Postgres `citext` extension; computed unique index on `lower(Email)` / `lower(Username)`; store display-case separately with a normalized shadow column.
+  **Why:** `citext` would require enabling an extension in the `db` init and coupling the schema to a Postgres-only feature. A `lower()` computed index requires raw SQL in the migration and doesn't help username display. Display-case preservation isn't required by any AC; chat display names can be added as a separate column in a later story if needed. Normalizing at the service layer is the simplest thing that works and is now pinned by tests.
+- **Decision:** Unknown-email login returns `401`, not `404`.
+  **Alternatives considered:** `404 Not Found` (more "correct" in REST-purist terms); or a user-lookup endpoint that itself returns 404 and a separate 401 on password mismatch.
+  **Why:** account enumeration. Differentiating "user doesn't exist" from "wrong password" lets an attacker discover which emails are registered. Returning `401` uniformly collapses that side channel at near-zero cost. This is also reflected in an explicit test (`Login_with_unknown_email_returns_401_to_avoid_enumeration`) so the behavior can't silently drift.
+- **Decision:** Session cookie with `SameSite=Lax` + 30-day expiry, `Secure` driven by `Request.IsHttps`.
+  **Alternatives considered:** `SameSite=Strict`; session-scoped (no expiry); `Secure` always on.
+  **Why:** `Lax` is the practical default for a web chat — `Strict` would break any cross-site navigation into the app (e.g., an emailed password-reset link landing on the app while the user is already signed in elsewhere). 30-day expiry supports FR-6 (login persists across browser close) without waiting for Story 1.5. `Secure` unconditionally would break the hackathon's HTTP-only dev environment; gating on `IsHttps` means the flag auto-turns-on the first time the app is fronted by a TLS-terminating proxy in production.
+
+### Friction and blockers
+- **The lazy-DbContext fix described above was a real hiccup.** First test run failed with `The ConnectionString property has not been initialized` because `GetConnectionString` was called at the wrong time in the config pipeline. Diagnosed from the stack trace (ran through `Program.Main` → `MigrateAsync` → `NpgsqlConnection.Open`). The fix is three lines but the diagnosis wasn't obvious from the symptom; the lesson is that `WebApplicationFactory` + `WebApplication.CreateBuilder` have specific ordering semantics that bite when you reach for "read config at registration time".
+- **`Microsoft.Extensions.Identity.Core` package false-start.** Reflexively added as a `PackageReference`, `dotnet restore` emitted NU1510 complaining the package duplicates shared-framework types. A 30-second dead end that ended with `dotnet build` of a throwaway probe project confirming `PasswordHasher<TUser>` already compiles without the reference. Lesson for .NET 10: before adding `Microsoft.Extensions.*` or `Microsoft.AspNetCore.*` packages, assume they're in the shared framework and verify with a probe build.
+- **None of the AC wording or test design surfaced anything ambiguous.** The up-front decisions block in `docs/stories.md` (Decisions §4, §5, §6) carried exactly the load it was meant to — there was no "wait, should I …?" moment during implementation. Score one for the decisions-at-planning pattern.
+
+### Verification evidence
+- Tests: **17 passing** (16 backend: 1 sanity + 3 persistence + 12 auth — 9 fact + 3 theory; 1 frontend: App.test).
+- Build: ✅ `dotnet build` → 0 warnings, 0 errors.
+- `docker compose up`: ✅ — full teardown with `-v` + fresh rebuild, all three services healthy in ~12s; migrations auto-apply on the first boot.
+- End-to-end check via live `curl` against the running container:
+  - `POST /api/auth/register {email: alice@example.com, username: alice, password: Secret123}` → `201` with `{id, email, username, createdAt}`.
+  - Same request again → `409 ProblemDetails` `{title: "Duplicate email", …}`.
+  - `POST /api/auth/login {email: alice@example.com, password: Secret123}` → `200` with `{token, user}` AND `Set-Cookie: session=<guid>; HttpOnly; SameSite=Lax; Expires=30d; Path=/`.
+  - Same with `password: WrongPass1` → `401 ProblemDetails` `{title: "Invalid credentials"}`.
+  - `psql "SELECT … FROM Sessions"` confirms the row landed with `UserAgent=curl/8.18.0` and `RemoteIp=::ffff:172.18.0.1` — so the Docker gateway IP, correctly captured by `HttpContext.Connection.RemoteIpAddress`.
+
+### Reflection
+Two reusable patterns fell out of this story. First, **the ApiFactory fixture** (`WebApplicationFactory<Program>` + Testcontainers Postgres + lazy config override) is now the template for every subsequent endpoint story (1.5 session middleware, 1.8 rooms, 1.11 SignalR hub integration, etc.) — I expect zero further changes to the fixture shape. Second, **Decisions §N in `docs/stories.md`** paid its cost back big time: password policy, rate-limiting scope, and session-metadata sourcing were all locked before I started coding, so the entire implementation pass was uninterrupted by "wait, should I …" moments. The only real stumble (the eager-vs-lazy DbContext config) was a .NET-host subtlety that wouldn't have been caught by planning, because it's the kind of thing you only see when you wire the real test host. Pattern to commit to: **keep decisions upstream, keep scaffolding fixtures canonical, let the surprises be genuine system interactions rather than avoidable ambiguity.**
+
+### Cost so far (rough)
+- Wall clock for Story 1.4 end-to-end (from task creation → commit): ~35 minutes. Rough breakdown: 2 min package probe (+revert), 4 min fixture + failing tests, 3 min diagnosing the lazy-config issue, 8 min endpoint implementation + DTOs + PasswordPolicy, 4 min Program.cs wiring + build, 3 min test iteration to green, 5 min docker teardown/rebuild + live curl verification, 3 min README + stories.md + commit, 3 min journal.
+- Story was estimated at 3 points (≈2 hours); actual was well inside that.
+- Running total for MVP track: Story 1.1 (~45min) + 1.2 (~10min) + 1.3 (~25min) + 1.4 (~35min) ≈ **~2 hours of agent-wall-clock** to a working auth surface on top of a migrated schema.
+
+### Next
+- **Story 1.5 — Session-based auth middleware, logout, and current-user endpoint.** Everything it needs is now in place: sessions are persisted, the cookie is set, the token format is a lookup-friendly `Guid`. The middleware reads the `session` cookie, looks up the `Session` row (filtering `RevokedAt == null`), loads the user, and populates `HttpContext.User`. `POST /api/auth/logout` flips `RevokedAt`. `GET /api/me` returns the current user. No schema change needed. **Open risk to carry into 1.5:** where does the middleware live and how does it handle the case where the session's user has been soft-deleted? Default answer (reject with 401) works for MVP, but if Story 2.10 ever flips soft-delete semantics, the middleware's filter becomes load-bearing.
+
+---
