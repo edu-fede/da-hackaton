@@ -96,7 +96,7 @@ As the backend, I need a persistent user and session model so that auth endpoint
 **Story Points:** 2
 **Traces to:** FR-1, FR-2, FR-3, FR-9, FR-15
 
-**Status:** Done (commit pending)
+**Status:** Done (commit `59248cb`)
 
 ---
 

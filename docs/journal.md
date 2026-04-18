@@ -174,3 +174,61 @@ Story 1.3 enforces user uniqueness **case-sensitively at the DB level by design*
 **Mitigation plan:** Story 1.4 tests must include an explicit case-conflict assertion: register `Juan@x.com`, then attempt to register `juan@x.com` — expect a conflict response. Same shape of test for username. This pins the normalization contract at the service boundary and will fail loudly if any future endpoint skips the normalization step.
 
 ---
+
+## [2026-04-18 18:52 ART] — User/Session schema + initial EF migration
+
+**Story:** Story 1.3 — User & Session data model + initial EF migration
+**Commit:** `59248cb` — feat(api,db): add User/Session schema with initial migration
+
+### What was built
+The persistence foundation for auth. Two POCO entities (`User`, `Session`) with fluent configuration in `AppDbContext` — unique indexes on `Email` and `Username`, a cascade FK from `Session.UserId` to `User.Id`, and sensible column length caps (email 320, username 32, password hash 512, UA 512, IP 45). A local `dotnet-ef 10.0.0` tool manifest and a `DesignTimeDbContextFactory` make `dotnet ef migrations add …` reproducible without global tool or env-var setup. The generated `InitialSchema` migration auto-applies on API startup when `app.Environment.IsDevelopment()` — the compose file already sets that, so the grader's first `docker compose up` creates the schema. A `Testcontainers.PostgreSql` class fixture runs the migration once per test class and exposes a `CreateContext()` factory, and three xUnit v3 tests prove round-trip, duplicate-email rejection, and duplicate-username rejection via real Npgsql SQLSTATE 23505.
+
+### ADLC traceability
+- **Requirements satisfied:** FR-1 (registration model fields), FR-2 (unique email — unique index), FR-3 (unique, immutable username — unique index; immutability is a service-layer contract for Story 1.4), FR-9 (PasswordHash column sized for Argon2id/Identity output), FR-15 (Session fields for the future sessions screen). NFR-16 is extended via Serilog lines logging start and end of the migration step on startup.
+- **AC status:** all 5 acceptance criteria in `docs/stories.md` §Story 1.3 now `[x]`. `**Status:** Done (commit 59248cb)` appended.
+- **No reinterpretation.** AC wording called for "a round-trip test"; I delivered three tests (round-trip + two unique-constraint tests), flagged on the plan file before approval. No silent expansion.
+
+### Non-obvious decisions
+- **Decision:** Spin up real Postgres via `Testcontainers.PostgreSql` for integration tests instead of `Microsoft.EntityFrameworkCore.InMemory` or the SQLite in-memory provider.
+  **Alternatives considered:** EF Core InMemory, SQLite in-memory, or connecting to the docker-compose Postgres.
+  **Why:** InMemory and SQLite don't honor Postgres unique-index semantics the same way (InMemory uses `Dictionary` semantics; SQLite's collation is different), so a broken constraint could pass silently. Sharing the compose DB would couple tests to an out-of-band process. Testcontainers gives fidelity at ~3s/class overhead — the cost proved worth it within minutes.
+- **Decision:** Single consolidated `InitialSchema` migration rather than shipping an additive follow-up once the unique indexes were added.
+  **Alternatives considered:** generate the basic schema first, then a second migration `AddUniqueIndexes`.
+  **Why:** nothing is deployed anywhere persistent yet, so squashing is safe and produces cleaner history for graders reading the repo. Explicitly noted (earlier in this journal at 21:48) that this is a one-time allowance — once the schema is live, the only safe path is additive migrations.
+- **Decision:** Case-sensitive uniqueness at the DB layer; case-insensitive normalization deferred to the service layer (Story 1.4).
+  **Alternatives considered:** `citext` column type, or a computed unique index on `lower(Email)`.
+  **Why:** citext is a Postgres extension that would need to be enabled in the `db` image init scripts; `lower()` indexes work but require raw SQL in the migration. Service-layer normalization is simpler and — as flagged in the earlier 21:49 note — also already requires a Story 1.4 test to prove the contract holds. Accepted risk documented there.
+- **Decision:** Pin `dotnet-ef` in a local tool manifest (`.config/dotnet-tools.json`) rather than assuming a global install.
+  **Alternatives considered:** assume `dotnet ef` is globally installed on contributor machines; or bake it into the `api` Dockerfile's build stage.
+  **Why:** the tool manifest is self-contained — `dotnet tool restore` makes `dotnet ef` work for any cloner on day one, and pinning the version to `10.0.0` matches `Microsoft.EntityFrameworkCore 10.0.0` in `Api.csproj` so there's no scaffold/runtime mismatch.
+- **Decision:** `Guid` primary keys for both entities.
+  **Alternatives considered:** `int` identity columns.
+  **Why:** `Session.Id` doubles as the opaque session token in Story 1.5; `int` would leak creation order and allow enumeration. `Guid` also aligns with the "int or UUID" latitude CLAUDE.md §3 already grants for room IDs, so it's a consistent project-wide default.
+
+### Friction and blockers
+- **Test data hit the username length constraint.** First test run failed with `value too long for type character varying(32)` because I seeded usernames as `alice-{Guid.ToString("N")}` — that's 38 characters, two chars over the 32 cap I'd just defined. The good news: the test caught my own schema decision doing exactly what it's supposed to do. Fixed by trimming the suffix to 8 chars. Lesson: fit your test fixtures to your constraints, don't assume a random Guid "just works" as a username.
+- **xUnit v3 analyzer complaints.** The `xUnit1051` rule flags any async DB call that isn't passed `TestContext.Current.CancellationToken`. Trivial fix — one-line add per call — but worth noting for future tests so I don't introduce the warning again. This is v3-specific; the project is on `xunit.v3 1.0.0`.
+- **No real blockers.** The plan file set up during plan-mode covered everything, and execution was mostly mechanical. If there was drift it was spending ~5 minutes second-guessing whether to name the migration `InitialSchema` vs `AuthBaseline` — settled on `InitialSchema` because it matches the AC wording and there's no reason to invent a synonym.
+
+### Verification evidence
+- Tests: **5 passing** (4 backend: 1 sanity + 3 PersistenceTests; 1 frontend: App.test).
+- Build: ✅ `dotnet build DataArtHackaton.slnx` → 0 warnings, 0 errors.
+- `docker compose up`: ✅ — teardown with `-v` + fresh build, all three services healthy in <15s.
+- End-to-end check:
+  - `curl http://localhost:8080/health` → `200 {"status":"healthy","database":"up"}`.
+  - `docker exec hackaton-db psql -c "\dt"` lists `Users`, `Sessions`, `__EFMigrationsHistory`.
+  - `\d "Users"` shows both unique indexes and the `ON DELETE CASCADE` FK inbound from Sessions.
+  - `docker logs hackaton-api` contains `Applying migration '20260418214803_InitialSchema'.` followed by `EF Core migrations applied.` — so on a fresh grader environment the schema materializes before the first request lands.
+  - Playwright GET `/` → React app loads, fires `GET /health` → 200. UI path unchanged but proven intact.
+
+### Reflection
+The plan-mode discipline paid off again: every design decision was logged on the plan file before any code was written, so execution was uninterrupted by "wait, should I use citext instead?" The only surprise was self-inflicted (test data vs column length), and the test suite caught it in under a minute — a lived example of why Testcontainers beats in-memory providers. Pattern to keep reusing: **one `PostgresFixture` per test class, migrations run once per container**; Story 1.4 (register/login) should build on the same fixture without changes. If there's a lesson for later stories it's to always ask "does my test fixture respect the invariants I'm about to declare?" before writing the assertions — had I seeded data first and constrained second, this would have been seamless.
+
+### Cost so far (rough)
+- Wall clock for Story 1.3 end-to-end (plan approval → commit): ~25 minutes. Breakdown roughly: 2 min tool manifest, 4 min entities + DbContext + DesignTimeFactory, 6 min fixtures + tests, 2 min generate migration, 1 min test failure diagnosis + fix, 4 min auto-apply + full compose teardown/rebuild, 3 min DB/psql inspection + Playwright smoke, 3 min commit + doc updates.
+- Story was estimated at 2 points (≈1 hour); actual was inside that.
+
+### Next
+- **Story 1.4 — Register & login endpoints (REST).** Schema is now in place; next is the first real user-facing feature (POST `/api/auth/register`, POST `/api/auth/login`). Prerequisites resolved: Decision §5 (password policy: ≥8 chars, ≥1 letter + 1 digit, server-side), Decision §6 (rate-limiting out of scope — add README note). Open risk already flagged at 21:49: Story 1.4 tests MUST include the case-conflict assertion (register `Juan@x.com` then `juan@x.com` → 409) to pin the normalization contract that the DB is not enforcing.
+
+---
