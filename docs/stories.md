@@ -153,16 +153,18 @@ As an authenticated caller, I want the API to enforce session validity and to lo
 As a user, I want web pages to register, sign in, and stay signed in across reloads so I can use the chat (FR-1, FR-4, FR-6).
 
 **Acceptance Criteria:**
-- [ ] `/login` and `/register` routes render per Appendix A wireframes.
-- [ ] Successful login stores the session cookie (HTTP-only set by server) and redirects to `/`.
-- [ ] Route guard redirects unauthenticated users to `/login` for protected routes.
-- [ ] Auth state persists across full-page reload.
-- [ ] Vitest tests cover the login form happy path and an invalid-credentials branch.
+- [x] `/login` and `/register` routes render per Appendix A wireframes.
+- [x] Successful login stores the session cookie (HTTP-only set by server) and redirects to `/`.
+- [x] Route guard redirects unauthenticated users to `/login` for protected routes.
+- [x] Auth state persists across full-page reload.
+- [x] Vitest tests cover the login form happy path and an invalid-credentials branch.
 
 **Priority:** High
 **Labels:** web, testing
 **Story Points:** 3
 **Traces to:** FR-1, FR-4, FR-6, NFR-12
+
+**Status:** Done (commit pending)
 
 ---
 
