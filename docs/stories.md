@@ -131,15 +131,17 @@ As a new user, I want to create an account and sign in so I can access the app (
 As an authenticated caller, I want the API to enforce session validity and to log me out without touching other sessions (FR-5).
 
 **Acceptance Criteria:**
-- [ ] Requests with a valid session cookie populate `HttpContext.User`; expired/revoked tokens return `401` `ProblemDetails`.
-- [ ] `POST /api/auth/logout` sets `Session.RevokedAt` for the current session only; other sessions remain valid.
-- [ ] `GET /api/me` returns `{ id, email, username }`.
-- [ ] Persistent cookie lifetime allows return visits after browser close (FR-6).
+- [x] Requests with a valid session cookie populate `HttpContext.User`; expired/revoked tokens return `401` `ProblemDetails`.
+- [x] `POST /api/auth/logout` sets `Session.RevokedAt` for the current session only; other sessions remain valid.
+- [x] `GET /api/me` returns `{ id, email, username }`.
+- [x] Persistent cookie lifetime allows return visits after browser close (FR-6).
 
 **Priority:** High
 **Labels:** api, security, testing
 **Story Points:** 2
 **Traces to:** FR-5, FR-6, NFR-12
+
+**Status:** Done (commit pending)
 
 ---
 

@@ -1,3 +1,4 @@
+using System.Security.Claims;
 using Hackaton.Api.Data;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Identity;
@@ -9,13 +10,12 @@ namespace Hackaton.Api.Auth;
 
 public static class AuthEndpoints
 {
-    private const string SessionCookieName = "session";
-
     public static RouteGroupBuilder MapAuthEndpoints(this IEndpointRouteBuilder routes)
     {
         var group = routes.MapGroup("/api/auth");
         group.MapPost("/register", Register);
         group.MapPost("/login", Login);
+        group.MapPost("/logout", Logout).RequireAuthorization();
         return group;
     }
 
@@ -119,7 +119,7 @@ public static class AuthEndpoints
         db.Sessions.Add(session);
         await db.SaveChangesAsync(ct);
 
-        http.Response.Cookies.Append(SessionCookieName, session.Id.ToString(), new CookieOptions
+        http.Response.Cookies.Append(SessionAuthenticationDefaults.CookieName, session.Id.ToString(), new CookieOptions
         {
             HttpOnly = true,
             Secure = http.Request.IsHttps,
@@ -131,6 +131,28 @@ public static class AuthEndpoints
         return Results.Ok(new LoginResponse(
             session.Id.ToString(),
             new UserSummary(user.Id, user.Email, user.Username, user.CreatedAt)));
+    }
+
+    private static async Task<IResult> Logout(
+        HttpContext http,
+        AppDbContext db,
+        CancellationToken ct)
+    {
+        var sidClaim = http.User.FindFirstValue(SessionAuthenticationDefaults.SessionIdClaimType);
+        if (sidClaim is null || !Guid.TryParse(sidClaim, out var sessionId))
+        {
+            return Results.Unauthorized();
+        }
+
+        var session = await db.Sessions.SingleOrDefaultAsync(s => s.Id == sessionId, ct);
+        if (session is not null && session.RevokedAt is null)
+        {
+            session.RevokedAt = DateTimeOffset.UtcNow;
+            await db.SaveChangesAsync(ct);
+        }
+
+        http.Response.Cookies.Delete(SessionAuthenticationDefaults.CookieName);
+        return Results.NoContent();
     }
 
     private static IResult InvalidCredentials() => Results.Problem(

@@ -1,5 +1,7 @@
+using System.Security.Claims;
 using Hackaton.Api.Auth;
 using Hackaton.Api.Data;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Serilog;
@@ -27,6 +29,13 @@ builder.Services.AddDbContext<AppDbContext>((sp, options) =>
 builder.Services.AddSingleton<IPasswordHasher<User>, PasswordHasher<User>>();
 builder.Services.AddProblemDetails();
 
+builder.Services
+    .AddAuthentication(SessionAuthenticationDefaults.SchemeName)
+    .AddScheme<AuthenticationSchemeOptions, SessionAuthenticationHandler>(
+        SessionAuthenticationDefaults.SchemeName,
+        _ => { });
+builder.Services.AddAuthorization();
+
 const string WebAppCorsPolicy = "WebApp";
 builder.Services.AddCors(options =>
 {
@@ -49,8 +58,17 @@ if (app.Environment.IsDevelopment())
 
 app.UseSerilogRequestLogging();
 app.UseCors(WebAppCorsPolicy);
+app.UseAuthentication();
+app.UseAuthorization();
 
 app.MapAuthEndpoints();
+
+app.MapGet("/api/me", (ClaimsPrincipal user) => Results.Ok(new
+{
+    id = Guid.Parse(user.FindFirstValue(ClaimTypes.NameIdentifier)!),
+    email = user.FindFirstValue(ClaimTypes.Email),
+    username = user.FindFirstValue(ClaimTypes.Name),
+})).RequireAuthorization();
 
 app.MapGet("/health", async (AppDbContext db, CancellationToken ct) =>
 {
