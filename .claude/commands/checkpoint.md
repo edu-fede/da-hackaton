@@ -9,7 +9,7 @@ Verify current work and record it in the development journal. Invoke after every
 ## Steps
 
 ### 1. Run all tests
-- **Backend:** `cd src/Api.Tests && dotnet test` (or from root: `dotnet test`)
+- **Backend:** `cd tests/Api.Tests && dotnet test` (or from root: `dotnet test`)
 - **Frontend:** `cd src/Web && npm test -- --run`
 
 If **any** test fails: STOP. Report the failing test(s) to the developer. Do not commit. Do not log. Wait for direction.

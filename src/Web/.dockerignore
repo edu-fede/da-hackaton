@@ -1,0 +1,12 @@
+node_modules
+dist
+dist-ssr
+coverage
+.vite
+.eslintcache
+*.local
+*.log
+.env
+.env.local
+Dockerfile
+.dockerignore

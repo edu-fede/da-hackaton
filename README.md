@@ -1,4 +1,4 @@
-# ![DataArt](./docs/images/logo-v2.png) DataArt - Hackaton 2026
+# ![DataArt](./docs/images/logo.png) DataArt - Hackaton 2026
 
 DataArt Hackathon 2026 submission — an experiment in Agentic Development Life Cycle (ADLC).
 

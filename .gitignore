@@ -1,0 +1,46 @@
+# .NET
+bin/
+obj/
+out/
+*.user
+*.suo
+*.userprefs
+*.sln.docstates
+.vs/
+*.swp
+*.swo
+*.pidb
+*.cache
+*.log
+[Tt]est[Rr]esult*/
+[Bb]uild[Ll]og.*
+nuget.exe
+*.nupkg
+project.lock.json
+project.fragment.lock.json
+artifacts/
+.dotnet/
+
+# Node / Vite
+node_modules/
+dist/
+dist-ssr/
+coverage/
+*.local
+.eslintcache
+.vite/
+
+# Tooling
+.idea/
+.fleet/
+*.iml
+.DS_Store
+Thumbs.db
+
+# Env
+.env
+.env.local
+.env.*.local
+
+# Misc
+.playwright-mcp/
