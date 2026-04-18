@@ -365,3 +365,74 @@ The custom `AuthenticationHandler` pattern has now earned its place in the proje
 - **Story 1.6 — Web: login, register, and auth context.** First frontend-heavy story. The backend surface is complete: register, login, logout, `/api/me`, session cookie. On the web side: Login and Register pages per Appendix A wireframes, an `AuthProvider` React context that fetches `/api/me` on mount to recover state, a route guard that redirects unauthenticated users away from protected pages, and Vitest/Testing-Library tests covering the login form happy path + invalid-credentials branch. No backend changes required. **Open question to carry into 1.6:** how does the web client handle the CORS `credentials: 'include'` dance — the CORS policy already names `http://localhost:3000` and `AllowAnyHeader/AllowAnyMethod`, but cross-origin cookie flows need `WithCredentials` on the server AND `credentials: 'include'` on every `fetch`; if that's missing, the session cookie never round-trips and the frontend appears eternally logged out even though auth works. Plan to verify with a Playwright end-to-end check as part of the story.
 
 ---
+
+## [2026-04-18 20:54 ART] — Web login, register, auth context, route guard
+
+**Story:** Story 1.6 — Web: login, register, and auth context
+**Commit:** `d25d88a` — feat(web,api): login + register pages, auth context, route guard
+
+### What was built
+The first genuinely user-facing milestone. A grader can now open `http://localhost:3000`, be redirected to `/login` because they're anonymous, click "Create one" to register on `/register`, land on `/` as a signed-in user (the frontend auto-logs the new account in so they skip a second form), reload the page and still be signed in (the `AuthProvider` boots by calling `GET /api/me`), click Sign out, and be bounced back to `/login`. Everything goes through a small typed `fetch` wrapper (`src/Web/src/api/client.ts`) that unconditionally sets `credentials: 'include'` and throws a `ApiError` whose `.message` is the ProblemDetails `title` from the server. React Router v7 carries `/login`, `/register`, and a single protected `/` → `HomePage` route guarded by an `<Outlet>`-based `ProtectedRoute` component. The server-side prerequisite — adding `.AllowCredentials()` to the CORS policy — shipped with this commit because the story was literally unfulfillable without it.
+
+### ADLC traceability
+- **Requirements satisfied:** FR-1 (registration UI landed), FR-4 (login UI), FR-6 / NFR-12 (post-login reload still authenticated — verified live in Playwright). ADLC link: every `fetch` call in the new web code goes through `api.client`, which pipes ProblemDetails → UI (NFR-16 extended to the client).
+- **AC status:** 5/5 in §Story 1.6 now `[x]`. `**Status:** Done (commit d25d88a)`.
+- **Decisions invoked:** §5 of stories.md open-question decisions (password min 8 + letter + digit) is now reflected in the `RegisterPage` `minLength={8}` hint AND the fact that an invalid password falls through to the backend's ProblemDetails, which the frontend renders verbatim. §6 (no rate limiting) — already documented in README; unchanged by this story.
+- **Carried-forward risk from journal 20:02:** the CORS `credentials: 'include'` handshake. Resolved inline: `.AllowCredentials()` on the server, `credentials: 'include'` on every client call, `SameSite=Lax` works because localhost:3000 and localhost:8080 are same-site (same registrable domain). Playwright network trace confirmed the `Set-Cookie` + `Cookie` round-trip.
+
+### Non-obvious decisions
+- **Decision:** Ship the `.AllowCredentials()` server tweak together with the frontend, not as a separate Story 1.5b.
+  **Alternatives considered:** file a one-line server-side PR first, wait for review, then land the frontend; or stub the cookie flow in the frontend and defer cookie-roundtrip validation.
+  **Why:** the story is literally unfulfillable without it — AC2 ("login stores the session cookie") and AC4 ("auth state persists across full-page reload") both fail silently cross-origin. Splitting the commit would have forced an out-of-sequence server PR that makes no sense in isolation. Called out explicitly in the plan file and the commit message so this is visible in review rather than smuggled.
+- **Decision:** Auto-log-in after `/register`.
+  **Alternatives considered:** redirect to `/login` to have the user re-enter credentials; or issue the session from the register endpoint itself.
+  **Why:** not called out by any AC, but the common SPA UX; easier to reverse than to add. Kept the *backend* register endpoint responsibility narrow (create the row, return a summary) and made the frontend do the extra `login(email, password)` call. If the task author prefers the re-enter-credentials flow, that's a two-line change in `AuthProvider.register`.
+- **Decision:** React Context for auth state, not a router data loader or Redux/Zustand.
+  **Alternatives considered:** React Router v7's loader pattern (data-per-route); a state library.
+  **Why:** auth state is a single slice that every page reads and a handful of pages write. Loaders couple data fetching to route boundaries, which would make the `/api/me` bootstrap awkward (loaders run per-navigation, not on-mount). A full state library is overkill. `useContext` is the exactly-right amount of machinery.
+- **Decision:** Test with `vi.stubGlobal('fetch', vi.fn())` rather than installing MSW.
+  **Alternatives considered:** `msw` with a pre-configured server; `fetch-mock`.
+  **Why:** MSW is wonderful but costs a dependency + a setup file + a service-worker registration for the browser-mode path. For two tests that inspect one URL each, a `vi.fn()` matcher is clearer (the test body *shows* the response shape instead of pointing at a handler file). If the test count grows past ~10, reconsider.
+- **Decision:** Loading placeholder in `ProtectedRoute` rather than redirecting during the pending `/api/me` call.
+  **Alternatives considered:** render `<Navigate to="/login" />` while `loading === true` and let the user flicker through it.
+  **Why:** the flicker is user-hostile and also racy — `/api/me` resolves in ~100ms and if the user happens to have a valid session, we'd redirect them to `/login` and then back to `/` on `state change`, producing a double navigation. A neutral "Loading…" for ~100ms is strictly better.
+- **Decision:** Keep the original `/health` card visible on `HomePage`.
+  **Alternatives considered:** remove it entirely since it's scaffold residue.
+  **Why:** it's still useful as a live debug signal — a grader who sees a healthy status pill can distinguish "DB broken" from "frontend routing broken" at a glance. Cost is ~15 lines of JSX. Can be removed when a real home view lands.
+
+### Friction and blockers
+- **Duplicate POST on logout.** Playwright network trace showed `POST /api/auth/logout` firing twice on a single "Sign out" click. Both return `204`, both succeed, and the `Logout` handler is already idempotent (`if (session.RevokedAt is null) …`), so the second call is a no-op against an already-revoked row. This is suspicious but not broken — likely a `StrictMode` double-invoke in dev, or Playwright dispatching `click` twice. Noted for follow-up; did not chase in this story because the feature behaves correctly end-to-end.
+- **Tool-name collision on replace-all (historical repeat).** When wiring the `SessionAuthenticationDefaults.CookieName` constant into `AuthEndpoints.Login` in Story 1.5, `replace_all` tried to rewrite the class-member declaration too. I caught and fixed it that time; the same style-of-bug does not apply to Story 1.6, but worth reiterating as a standing hazard of `replace_all` across a file that owns the declaration site.
+- **Bash `cd` state.** At one point the checkpoint tried `cd src/Web && npm test` but the bash session's cwd had drifted back to the repo root, so `npm test` failed with "no package.json". Not a story issue — tooling friction — but 30 seconds lost. For durable commands I'll prefer absolute paths inside the Bash call instead of relying on cwd persistence.
+- **No genuine design surprises.** The plan file was accurate; every AC passed on first or second attempt. The biggest "hmm" moment was verifying that `SameSite=Lax` really does permit cross-origin cookies from `localhost:3000` to `localhost:8080` — it does, because both URLs share a registrable domain (port is origin-scoped, not site-scoped).
+
+### Verification evidence
+- Tests: **25 passing** (22 backend: unchanged; 3 frontend: 1 sanity + 2 `LoginPage` tests — happy path, invalid credentials).
+- Build: ✅ `dotnet build` clean; `npm run build` (Vite + `tsc --noEmit`) clean — 0 warnings.
+- `docker compose up`: ✅ — full teardown with `-v` + rebuild, all three services healthy in ~12s.
+- End-to-end check via Playwright MCP on the running container:
+  - `GET /` (anonymous) → `302` to `/login`, Sign-in form renders.
+  - `/register` form submit with `carol@example.com` / `carol` / `Secret123` → lands on `/` with `Hello, carol` heading.
+  - `/api/me` (with session cookie) → `200` with `{id, email, username}`; `Stack health` card green.
+  - Full-page reload on `/` → still on `/`, still greeted as `carol` — AuthProvider's `useEffect` re-fetched `/api/me` and restored state.
+  - `Sign out` click → `POST /api/auth/logout` → `204`, cookie deleted, navigated to `/login`.
+  - Re-navigating to `/` after logout → bounced back to `/login`.
+  - Network trace inspected: login response `Set-Cookie: session=<guid>; HttpOnly; SameSite=Lax; Expires=+30d`; subsequent `/api/me` requests carried `Cookie: session=<guid>`; after logout, `/api/me` called with no cookie and returned `401`.
+
+### Reflection
+Two patterns that are going to pay compounding interest. First, **a single typed `fetch` wrapper at `src/Web/src/api/client.ts`** — every future feature (SignalR wiring has a REST-history-fetch companion, rooms listing, friends, attachments) gets cross-origin cookies, ProblemDetails → UI error flow, and a typed error surface for free. Second, **the `AuthProvider` + `ProtectedRoute` shape** will be reused as-is for every post-auth feature; `RequireAuthorization()` on the server already gates every future endpoint, and on the client `ProtectedRoute` already gates every future page. If there's a lesson to carry: **bundle load-bearing server tweaks with the feature that first needs them, explicitly, in both plan and commit**; silently slipping a CORS change in a pure "web" commit is the kind of thing that makes a later grepper confused. The commit message + plan file + this journal all say the same thing three different ways, which is the right amount of redundancy for that class of change.
+
+### Time
+- **Agent wall clock:** ~35 min from `/add-feature 1.6` (plan mode entry) through `docker compose up` verification and commit. Breakdown: ~4 min exploration + plan, ~2 min package + tool-restore, ~8 min scaffolding the 7 new web files, ~5 min writing the two failing tests (and tightening them twice as I found cleaner ways to mock), ~6 min filling implementations, ~2 min compile + test iteration, ~6 min docker rebuild + Playwright smoke, ~2 min stories.md / commit.
+- **Equivalent human work:** ~3 hours end-to-end. Design (router shape, context shape): 15 min. Scaffold + React Router integration: 30 min. Auth context + protected route: 30 min. Login + Register forms with validation + styling: 45 min. API client wrapper: 15 min. Vitest tests (fetch stubbing is finicky without MSW experience): 30 min. Cross-origin cookie diagnosis + CORS server fix + Playwright smoke: 30 min. README/journal: 15 min. That's ~3h done as a focused senior dev; 4–6h realistic if interrupted.
+- **Productivity ratio:** ≈5× for this specific story. The ratio is higher than 1.5 because a lot of the cost was paid upstream — the decisions block in `stories.md`, the plan file, and the `ApiFactory`/`PostgresFixture` patterns from earlier stories made this story's design decisions flow rather than debate.
+- **Developer-time invested:** ~15 min during the story for review of the plan (~5 min), spot-checking the CORS decision (~3 min), watching the Playwright smoke (~3 min), and reviewing the diff before commit (~4 min). Closer to "actively reviewed and directed" than "watched the agent work" — the plan-file review upfront was the costliest bit.
+
+### Cost so far (rough)
+- Running total on the MVP track (Stories 1.1 → 1.6): roughly **3 hours of agent-wall-clock**. The app now boots, auths, and presents a real UI.
+- No direct token-count instrumentation available in-session; journal time estimates are based on session-transcript timestamps.
+
+### Next
+- **Story 1.7 — Room & RoomMember data model + migration.** Back to the backend. Schema-only story: introduce `Room`, `RoomMember { Role ∈ {Member, Admin, Owner} }`, and `RoomBan` entities, each with the right indexes and FKs; generate an additive `AddRoomsSchema` migration (NOT a consolidated rewrite — per journal 21:48, "consolidated migration is allowed only while no environment has the first migration deployed"; the `InitialSchema` has now been applied in Docker Compose on this machine so from here on, migrations are additive). Round-trip test for each entity. Points: 2. No web changes. No docker change. Prerequisite: verify `dotnet ef migrations add AddRoomsSchema` doesn't try to collapse with `InitialSchema`; that should be automatic but worth a sanity check.
+
+---

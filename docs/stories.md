@@ -164,7 +164,7 @@ As a user, I want web pages to register, sign in, and stay signed in across relo
 **Story Points:** 3
 **Traces to:** FR-1, FR-4, FR-6, NFR-12
 
-**Status:** Done (commit pending)
+**Status:** Done (commit `d25d88a`)
 
 ---
 
