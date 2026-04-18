@@ -1,4 +1,6 @@
+using Hackaton.Api.Auth;
 using Hackaton.Api.Data;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Serilog;
 
@@ -16,9 +18,14 @@ Log.Logger = new LoggerConfiguration()
 
 builder.Host.UseSerilog();
 
-var connectionString = builder.Configuration.GetConnectionString("Default");
-builder.Services.AddDbContext<AppDbContext>(options =>
-    options.UseNpgsql(connectionString));
+builder.Services.AddDbContext<AppDbContext>((sp, options) =>
+{
+    var config = sp.GetRequiredService<IConfiguration>();
+    options.UseNpgsql(config.GetConnectionString("Default"));
+});
+
+builder.Services.AddSingleton<IPasswordHasher<User>, PasswordHasher<User>>();
+builder.Services.AddProblemDetails();
 
 const string WebAppCorsPolicy = "WebApp";
 builder.Services.AddCors(options =>
@@ -42,6 +49,8 @@ if (app.Environment.IsDevelopment())
 
 app.UseSerilogRequestLogging();
 app.UseCors(WebAppCorsPolicy);
+
+app.MapAuthEndpoints();
 
 app.MapGet("/health", async (AppDbContext db, CancellationToken ct) =>
 {

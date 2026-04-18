@@ -80,6 +80,10 @@ curl -s http://localhost:8080/health | jq    # API health + DB connectivity
 - Docker Compose
 - SignalR (if required by the task)
 
+## Known limitations (production gaps)
+
+- **No rate limiting on auth endpoints.** `/api/auth/register` and `/api/auth/login` accept unbounded traffic from any caller. Production deployment would add per-IP throttling via ASP.NET Core's built-in `AddRateLimiter`. Out of scope for the hackathon by explicit decision (see §6 of the decisions block in `docs/stories.md`).
+
 ## Notes
 
 The `CLAUDE.md` file is the authoritative context document for the AI agent. The commands in `.claude/commands/` are the executable workflow primitives. Together they form the ADLC this project demonstrates.

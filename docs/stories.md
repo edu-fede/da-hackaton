@@ -108,16 +108,18 @@ As the backend, I need a persistent user and session model so that auth endpoint
 As a new user, I want to create an account and sign in so I can access the app (FR-1, FR-4).
 
 **Acceptance Criteria:**
-- [ ] `POST /api/auth/register` validates unique email + username, hashes password (Argon2id or ASP.NET Identity hasher), returns `201` with user summary.
-- [ ] `POST /api/auth/login` verifies password, creates a `Session` row, returns an opaque session token (cookie + body).
-- [ ] Duplicate email or username returns `409` `ProblemDetails`.
-- [ ] Password stored as hash only — plain text never written to DB or logs.
-- [ ] xUnit integration tests cover happy path, duplicate email, duplicate username, wrong password.
+- [x] `POST /api/auth/register` validates unique email + username, hashes password (Argon2id or ASP.NET Identity hasher), returns `201` with user summary.
+- [x] `POST /api/auth/login` verifies password, creates a `Session` row, returns an opaque session token (cookie + body).
+- [x] Duplicate email or username returns `409` `ProblemDetails`.
+- [x] Password stored as hash only — plain text never written to DB or logs.
+- [x] xUnit integration tests cover happy path, duplicate email, duplicate username, wrong password.
 
 **Priority:** High
 **Labels:** api, security, testing
 **Story Points:** 3
 **Traces to:** FR-1, FR-2, FR-3, FR-4, FR-9
+
+**Status:** Done (commit pending)
 
 ---
 
