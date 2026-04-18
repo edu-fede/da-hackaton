@@ -23,6 +23,8 @@ services:
       ASPNETCORE_ENVIRONMENT: Development
       ASPNETCORE_URLS: http://+:8080
       ConnectionStrings__Default: "Host=db;Port=5432;Database=hackaton;Username=hackaton;Password=hackaton"
+    volumes:
+      - ./logs:/app/logs
     ports:
       - "8080:8080"
     depends_on:

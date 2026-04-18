@@ -53,6 +53,25 @@ task.md  →  /process-task  →  requirements.md + stories.md  →  /add-featur
 - **Plan before acting:** non-trivial changes go through Plan Mode.
 - **Journal everything:** decisions, blockers, and learnings are captured in `docs/journal.md` as they happen.
 
+## Monitoring
+
+Once the stack is up, you can observe the system in two ways:
+
+**Live logs (streamed):**
+```bash
+docker compose logs -f api      # API + SignalR + background worker
+docker compose logs -f web      # nginx access log
+docker compose logs -f db       # Postgres
+```
+
+**Persistent logs:** the API writes structured logs to `./logs/api-YYYYMMDD.log` (volume-mounted from the container). These survive `docker compose down`.
+
+**Service health:**
+```bash
+docker compose ps               # current status of all services
+curl -s http://localhost:8080/health | jq    # API health + DB connectivity
+```
+
 ## Stack
 
 - .NET 10, Minimal APIs, EF Core + Npgsql, Serilog, xUnit v3 + FluentAssertions
