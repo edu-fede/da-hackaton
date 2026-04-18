@@ -31,6 +31,15 @@ builder.Services.AddCors(options =>
 
 var app = builder.Build();
 
+if (app.Environment.IsDevelopment())
+{
+    using var scope = app.Services.CreateScope();
+    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+    app.Logger.LogInformation("Applying EF Core migrations...");
+    await db.Database.MigrateAsync();
+    app.Logger.LogInformation("EF Core migrations applied.");
+}
+
 app.UseSerilogRequestLogging();
 app.UseCors(WebAppCorsPolicy);
 

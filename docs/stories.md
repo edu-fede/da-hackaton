@@ -85,16 +85,18 @@ As the developer, I want all API logs both in `docker compose logs` and in host-
 As the backend, I need a persistent user and session model so that auth endpoints can register, authenticate, and list/revoke sessions per FR-1..FR-6 and FR-15.
 
 **Acceptance Criteria:**
-- [ ] `User { Id, Email, Username, PasswordHash, CreatedAt, DeletedAt? }` with unique indexes on `Email` and `Username`.
-- [ ] `Session { Id, UserId, CreatedAt, LastSeenAt, UserAgent, RemoteIp, RevokedAt? }`.
-- [ ] `AppDbContext` registers both; `dotnet ef migrations add InitialSchema` succeeds.
-- [ ] Migration auto-applies on API startup in Development.
-- [ ] `dotnet test` has a round-trip test inserting and reading a `User`.
+- [x] `User { Id, Email, Username, PasswordHash, CreatedAt, DeletedAt? }` with unique indexes on `Email` and `Username`.
+- [x] `Session { Id, UserId, CreatedAt, LastSeenAt, UserAgent, RemoteIp, RevokedAt? }`.
+- [x] `AppDbContext` registers both; `dotnet ef migrations add InitialSchema` succeeds.
+- [x] Migration auto-applies on API startup in Development.
+- [x] `dotnet test` has a round-trip test inserting and reading a `User`.
 
 **Priority:** High
 **Labels:** api, db
 **Story Points:** 2
 **Traces to:** FR-1, FR-2, FR-3, FR-9, FR-15
+
+**Status:** Done (commit pending)
 
 ---
 
