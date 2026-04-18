@@ -307,3 +307,61 @@ Two reusable patterns fell out of this story. First, **the ApiFactory fixture** 
 - **Story 1.5 — Session-based auth middleware, logout, and current-user endpoint.** Everything it needs is now in place: sessions are persisted, the cookie is set, the token format is a lookup-friendly `Guid`. The middleware reads the `session` cookie, looks up the `Session` row (filtering `RevokedAt == null`), loads the user, and populates `HttpContext.User`. `POST /api/auth/logout` flips `RevokedAt`. `GET /api/me` returns the current user. No schema change needed. **Open risk to carry into 1.5:** where does the middleware live and how does it handle the case where the session's user has been soft-deleted? Default answer (reject with 401) works for MVP, but if Story 2.10 ever flips soft-delete semantics, the middleware's filter becomes load-bearing.
 
 ---
+
+## [2026-04-18 20:02 ART] — Session auth middleware, logout, /api/me
+
+**Story:** Story 1.5 — Session-based auth middleware, logout, and current-user endpoint
+**Commit:** `ae27847` — feat(api,security): session auth middleware, logout, /api/me
+
+### What was built
+A custom `SessionAuthenticationHandler` registered under the `"Session"` scheme. On every incoming request it reads the `session` cookie, parses the Guid, and looks up the `Sessions` row — `Include`-ing `User` — filtering to `RevokedAt IS NULL AND User.DeletedAt IS NULL`. Success populates a `ClaimsPrincipal` with `NameIdentifier`, `Name`, `Email`, and a custom `sid` claim carrying the session id so downstream handlers don't need to round-trip the cookie. `HandleChallengeAsync` is overridden to emit `application/problem+json` bodies, so every 401 conforms to RFC 9457 (NFR-16). `POST /api/auth/logout` (RequireAuthorization) reads the `sid` claim, sets `Session.RevokedAt` on that one row only, deletes the cookie, returns `204`. `GET /api/me` (RequireAuthorization) returns `{id, email, username}` derived from claims — no DB hit on the hot path. Six new integration tests prove every branch of the AC plus the FR-6 cookie-lifetime contract.
+
+### ADLC traceability
+- **Requirements satisfied:** FR-5 (per-session logout — verified by `Logout_revokes_current_session_only` which keeps a second session valid), FR-6 (persistent login across browser close — verified by `Login_cookie_has_persistent_30_day_expiry` asserting the Set-Cookie `expires` attribute is ~30 days from now), NFR-12 (same), NFR-16 (ProblemDetails on 401 via overridden `HandleChallengeAsync`).
+- **AC status:** all 4 in §Story 1.5 now `[x]`. `**Status:** Done (commit ae27847)` appended.
+- **Soft-delete open risk from journal 19:29 addressed explicitly in code:** the `SingleOrDefaultAsync` predicate filters `User.DeletedAt == null`, documented on the handler class itself. A user soft-deleted after session creation immediately fails auth on the next request — same as revocation, same 401 path, no special casing needed.
+
+### Non-obvious decisions
+- **Decision:** Implement a custom `AuthenticationHandler<AuthenticationSchemeOptions>` rather than middleware or `AddCookie`.
+  **Alternatives considered:** ad-hoc middleware that just sets `HttpContext.User`; ASP.NET Core's built-in `AddCookie(...)` scheme; a per-endpoint `[FromHeader]` token guard.
+  **Why:** middleware works but doesn't integrate with `RequireAuthorization()` / `[Authorize]` — the `.NET` authorization stack keys off registered schemes. `AddCookie` stores the principal inside an encrypted cookie, which defeats the point of having a DB-backed `Session` row (revocation would silently do nothing until the cookie expires). The `AuthenticationHandler` route gives us (a) first-class integration with the auth pipeline, (b) real-time revocation because every request re-reads the DB, and (c) a clean extension point for future auth rules.
+- **Decision:** Carry the session id as a custom `sid` claim rather than stashing it in `HttpContext.Items`.
+  **Alternatives considered:** `HttpContext.Items["SessionId"] = sessionId` populated by the handler and read by logout.
+  **Why:** `HttpContext.Items` is request-local and opaque to the rest of the authorization stack; the claim lives on the principal, survives any re-authentication, and is self-documenting in logs. It's also how the wider ecosystem models "this was issued by that session" (OIDC `sid`, spec'd in RFC 8693 §4.2). Cost is ~40 bytes per request.
+- **Decision:** `/api/me` returns claim values, not a DB read.
+  **Alternatives considered:** re-query the `Users` table so the response reflects edits between login and this call.
+  **Why:** claims were populated on auth (this same request), so they ARE fresh. Avoiding a second DB round-trip keeps `/api/me` on the order of a single lookup per request (the one inside `HandleAuthenticateAsync`). When we eventually add username or email editing (Story 2.10), sessions can be torn down on edit to force re-auth — cheaper and more correct than per-endpoint re-reads.
+- **Decision:** Override `HandleChallengeAsync` with a hand-written ProblemDetails body instead of relying on `AddProblemDetails()` to intercept the empty 401.
+  **Alternatives considered:** rely on the built-in `IProblemDetailsService` to shape the auth middleware's challenge response automatically.
+  **Why:** the auth challenge writes `401` directly and short-circuits the pipeline before the ProblemDetails middleware gets a chance. Empirically, the built-in path produced a `401` with `Content-Length: 0` — fine for HTTP but fails the AC wording ("returns `401` ProblemDetails"). Writing the body inline is nine lines and guarantees the shape.
+- **Decision:** Anonymous `/api/me` returns `401`, not redirect-to-login.
+  **Alternatives considered:** HTTP `302` to `/login` (browser-friendly), or a `403` (which some APIs conflate with unauthenticated).
+  **Why:** this is an API, not a server-rendered web app — a redirect would hijack `fetch()` calls in the SPA. `401` is the REST-correct answer; the frontend decides whether to navigate.
+
+### Friction and blockers
+- **Local constant naming collision.** While replacing the hardcoded `"session"` string in `AuthEndpoints.Login` with the new `SessionAuthenticationDefaults.CookieName` constant, the edit-all-occurrences replaced the `private const string SessionCookieName = "session";` field too — yielding `private const string SessionAuthenticationDefaults.CookieName = "session";` which doesn't compile. Had to follow up with a targeted edit to delete the now-dead local constant. Lesson for future replace-all passes: if the replaced symbol is itself defined in the same file, double-check the declaration site.
+- **Zero test surprises.** The handler + /logout + /api/me all passed on the first full run after wiring. That's partly the failure-first test discipline (writing tests that initially fail with 404 narrows the target very precisely) and partly that `AuthenticationHandler<T>` is a boring, well-documented extension point — nothing about it was novel.
+
+### Verification evidence
+- Tests: **23 passing** (22 backend: 1 sanity + 3 persistence + 12 auth + 6 session; 1 frontend: App.test).
+- Build: ✅ `dotnet build DataArtHackaton.slnx` — 0 warnings, 0 errors.
+- `docker compose up`: ✅ — fresh teardown with `-v` + rebuild, all three services healthy in <12s.
+- End-to-end check via live `curl` against the running container:
+  - `GET /api/me` (no cookie) → `401 {"type":…,"title":"Unauthorized","status":401}` with `Content-Type: application/problem+json` — confirms the overridden challenge emits a proper ProblemDetails body.
+  - `POST /api/auth/register` → 201, `POST /api/auth/login` → 200 with `Set-Cookie: session=…`.
+  - `GET /api/me` (using the login cookie) → `200 {"id":"6973a1b6-…","email":"bob@example.com","username":"bob"}`.
+  - `POST /api/auth/logout` → `204` (no body).
+  - `GET /api/me` (reusing the now-revoked cookie) → `401` — confirms every request re-checks the DB.
+
+### Reflection
+The custom `AuthenticationHandler` pattern has now earned its place in the project's vocabulary; every future auth-gated surface (rooms, messages, admin actions) gets `RequireAuthorization()` for free, and the `sid` claim is a clean primitive for auditing "which session did this action" later on. The test style — pinning every AC branch AND the *implied* contracts (content-type is `application/problem+json`; cookie is `HttpOnly`; `expires` is ~30 days; revocation takes effect on the very next request) — is worth keeping as the default for every story: an AC that doesn't assert content-type is inviting drift. If I were starting 1.5 over I'd skip the flirtation with relying on `AddProblemDetails()` auto-shaping; write the challenge body yourself, it's nine lines and eliminates a whole class of "why is this 401 empty" bugs at review time.
+
+### Cost so far (rough)
+- Wall clock for Story 1.5: ~25 minutes from plan to journal entry. Faster than 1.4 largely because the `ApiFactory` fixture + the normalized test patterns (`RawClient`, `UniqueEmail`, `UniqueUsername`) came directly from 1.4 and were reused verbatim.
+- Story was estimated at 2 points (≈1 hour); actual was inside the envelope.
+- Running total on the MVP track (1.1 → 1.5): roughly **2h 25min** of agent-wall-clock. Schema + register/login/session auth is now a complete, test-covered surface.
+
+### Next
+- **Story 1.6 — Web: login, register, and auth context.** First frontend-heavy story. The backend surface is complete: register, login, logout, `/api/me`, session cookie. On the web side: Login and Register pages per Appendix A wireframes, an `AuthProvider` React context that fetches `/api/me` on mount to recover state, a route guard that redirects unauthenticated users away from protected pages, and Vitest/Testing-Library tests covering the login form happy path + invalid-credentials branch. No backend changes required. **Open question to carry into 1.6:** how does the web client handle the CORS `credentials: 'include'` dance — the CORS policy already names `http://localhost:3000` and `AllowAnyHeader/AllowAnyMethod`, but cross-origin cookie flows need `WithCredentials` on the server AND `credentials: 'include'` on every `fetch`; if that's missing, the session cookie never round-trips and the frontend appears eternally logged out even though auth works. Plan to verify with a Playwright end-to-end check as part of the story.
+
+---

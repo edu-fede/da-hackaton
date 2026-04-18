@@ -141,7 +141,7 @@ As an authenticated caller, I want the API to enforce session validity and to lo
 **Story Points:** 2
 **Traces to:** FR-5, FR-6, NFR-12
 
-**Status:** Done (commit pending)
+**Status:** Done (commit `ae27847`)
 
 ---
 
