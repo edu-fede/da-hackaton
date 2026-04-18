@@ -3,6 +3,8 @@
 ## Project
 Web application built for DataArt's Hackathon 2026. The experiment tests whether a developer can deliver a working application by directing AI agents rather than writing code directly (agentic development). The developer reviews and directs; the agent implements.
 
+The task (see `docs/task.md`): a classic web-based online chat application with auth, public/private rooms, 1-to-1 messaging, friends/contacts, attachments, moderation, persistent history, and presence.
+
 ## Golden Rule (non-negotiable)
 The application **must** start cleanly with:
 
@@ -14,26 +16,86 @@ This is a **binary evaluation gate**. If `docker compose up` does not bring the 
 
 ## Stack
 - **Backend:** .NET 10, Minimal APIs, EF Core + Npgsql, Serilog, xUnit v3 + FluentAssertions
+- **Real-time:** SignalR (WebSocket transport) for messaging, presence, notifications
+- **In-process queue:** `System.Threading.Channels` for message buffering (no external broker)
 - **Frontend:** React + Vite + TypeScript + Tailwind CSS, Vitest + Testing Library
+- **SignalR client (web):** `@microsoft/signalr`
 - **Database:** PostgreSQL 16
+- **File storage:** local filesystem (mounted volume in Docker)
 - **Container:** Docker Compose (services: `db`, `api`, `web`)
-- **Real-time (if required):** SignalR
+
+## Architecture Constraints (from task briefing — NON-NEGOTIABLE)
+
+These were called out explicitly by the task author during the kickoff. They are **design constraints**, not optimizations. Violating them will require rework and may cause the system to miss its performance targets.
+
+### 1. Real-time messaging flow
+Message path MUST be asynchronous with an in-memory queue between reception and persistence/broadcast:
+
+```
+Client sends message (SignalR) → Hub receives
+  → push to in-memory queue (Channel<T>)
+  → ack to sender + broadcast to room (via SignalR)           [fast path]
+
+Background consumer (IHostedService):
+  → read from queue → persist to Postgres → log               [slow path]
+```
+
+The sender does NOT wait for the DB write before the message appears for receivers. The DB write is fire-and-forget from the user's perspective.
+
+**Do NOT** implement "receive → INSERT → SELECT → broadcast" as a single synchronous chain. That pattern will not meet the <3s delivery target under concurrent load.
+
+### 2. Presence tracking
+User online/AFK/offline state is held in an **in-memory structure** on the server:
+
+```
+ConcurrentDictionary<userId, PresenceInfo> in the SignalR Hub
+  - populated on OnConnectedAsync
+  - updated on client heartbeat / activity signal
+  - removed on OnDisconnectedAsync
+  - changes broadcast over SignalR to affected rooms/contacts
+```
+
+**Do NOT** store presence as a queryable column in the database (e.g., `Users.Status`, `Users.LastSeenAt`). Do NOT poll the database for presence. Presence is ephemeral, lives in RAM, and is recomputed from active connections.
+
+### 3. Chat watermarks (message history integrity)
+Every message in every chat gets a per-chat incremental ID (a "watermark"). Clients track the last watermark they have seen per chat. On reconnect or on demand:
+
+```
+Client → Server: "my watermarks are chat1:5, chat2:12, chat3:0"
+Server → Client: for each chat, return any messages with watermark > client's value
+```
+
+This guarantees history integrity without maintaining a per-user offline message queue. If the client's watermark is behind the server's latest, there is a gap → re-fetch.
+
+**Implication:** in-memory message queue is ONLY for the live-delivery path. It does NOT need to retain messages for offline users. The watermark-based resync handles that on reconnect. The queue must NOT grow unbounded.
+
+### 4. REST vs WebSocket — what goes where
+- **REST (HTTP):** registration, login, logout, password change, profile, account deletion, listing rooms, listing contacts, creating rooms, managing friends, file upload/download, admin actions (ban/kick/invite).
+- **SignalR (WebSocket):** sending/receiving messages, presence updates, unread indicator updates, message edit/delete notifications, real-time room member changes.
+
+If in doubt: is it request-response? → REST. Is it push/streaming? → SignalR.
+
+### 5. Scale targets (for sanity checks only; not a load test target)
+- 300 concurrent users.
+- 1000 users per room.
+- 10K+ messages per room with smooth infinite scroll → **cursor-based pagination**, never OFFSET.
+- Message delivery <3s, presence updates <2s.
 
 ## Project Structure
 ```
 da-hackaton/
 ├── src/
-│   ├── Api/              # .NET Minimal API
-│   └── Web/              # React + Vite
+│   ├── Api/              # .NET Minimal API + SignalR Hub + message queue consumer
+│   └── Web/              # React + Vite + SignalR client
 ├── tests/
 │   └── Api.Tests/        # xUnit v3 (Web tests colocated in src/Web)
 ├── docs/
-│   ├── task.md           # Original task description (converted from .docx if needed)
+│   ├── task.md           # Original task description
 │   ├── requirements.md   # Structured requirements extracted from task
 │   ├── stories.md        # Implementable stories (Jira-compatible format)
-│   └── journal.md        # Development log (updated via /checkpoint)
+│   └── journal.md        # Development log — THE key deliverable per task author
 ├── .claude/
-│   └── commands/         # Custom commands (/checkpoint, /process-task, /add-feature, /verify-deployable)
+│   └── commands/         # Custom commands (/process-task, /add-feature, /checkpoint, /verify-deployable, /journal-note)
 ├── docker-compose.yml
 ├── CLAUDE.md             # This file
 └── README.md
@@ -50,9 +112,7 @@ da-hackaton/
 ## Workflow Orchestration
 
 ### Plan Mode Default
-Enter Plan Mode for any non-trivial task (3+ steps or architectural decisions). 
-Propose a plan before executing structural work; wait for developer approval on significant changes. 
-If something goes sideways, **stop and re-plan — don't push through**.
+Enter Plan Mode for any non-trivial task (3+ steps or architectural decisions). Propose a plan before executing structural work; wait for developer approval on significant changes. If something goes sideways, **stop and re-plan — don't push through**.
 
 ### Harness Engineering (core discipline)
 - **Never commit red.** If any test fails, fix it before moving on.
@@ -63,7 +123,7 @@ If something goes sideways, **stop and re-plan — don't push through**.
 
 ### Verification Before Done
 No task is complete until proven:
-1. Unit tests pass (`dotnet test` for backend, `npm test` for frontend).
+1. Unit tests pass (`dotnet test` for backend, `npm test -- --run` for frontend).
 2. Build succeeds.
 3. `docker compose up -d --build` brings the system to a working state.
 4. The feature actually does what the acceptance criteria say (exercise it manually or via Playwright MCP).
@@ -71,8 +131,7 @@ No task is complete until proven:
 If a fix feels hacky, pause and ask — don't paper over it.
 
 ### Checkpoint Pattern
-After each feature, invoke `/checkpoint`. This runs tests, commits if green, and appends progress to `docs/journal.md`. 
-Do not skip — the journal is part of the deliverable.
+After each feature, invoke `/checkpoint`. This runs tests, commits if green, and appends progress to `docs/journal.md`. **Do not skip** — the journal is **half of the evaluation** per the task author's explicit guidance: "the most valuable output from this is your feedback".
 
 ### Task Management
 - Read `docs/stories.md` for story priority and status.
@@ -81,9 +140,7 @@ Do not skip — the journal is part of the deliverable.
 - If the story is unclear or ambiguous, ask before assuming.
 
 ### Self-Improvement Loop
-After any correction from the developer, update `CLAUDE.md` or the relevant command file with the corrected pattern. 
-Apply the same correction to similar existing cases. 
-Goal: zero repeated mistakes across the session.
+After any correction from the developer, update `CLAUDE.md` or the relevant command file with the corrected pattern. Apply the same correction to similar existing cases. Goal: zero repeated mistakes across the session.
 
 ## Code Comments
 - Do NOT describe what the code does — the code should be self-explanatory.
@@ -91,22 +148,29 @@ Goal: zero repeated mistakes across the session.
 - DO add XML doc comments (`///`) on public API contracts and shared types.
 
 ## Error Handling
-- **API:** return RFC 9457 `ProblemDetails` for errors — no custom formats.
-- **Logging:** structured with Serilog, include correlation IDs where available. Never swallow errors silently.
+- **API:** return RFC 9457 `ProblemDetails` for HTTP errors — no custom formats.
+- **SignalR:** use `HubException` with meaningful messages; let the client handle reconnect logic.
+- **Logging:** structured with Serilog, include correlation IDs and user IDs where available. Never swallow errors silently.
 - **Frontend:** user-visible errors must be actionable; log technical detail to console in dev.
 
+## UI Guidance
+The task appendix includes ASCII wireframes as a **reference**, not a binding spec. Per the task author: "make UI concise and usable". Follow the general layout (top menu, central message area, side lists) but do not pixel-chase the wireframes. Tailwind defaults are fine.
+
 ## Known Constraints
-- **Evaluation window:** 8 working hours on hackathon day; deadline is hard.
+- **Evaluation window:** submission by Monday 12:00 UTC (Saturday kickoff, work split across 3 days).
 - **Agentic mode:** the developer directs and reviews; code is written by the agent. Direct code edits are allowed for small corrections but should be rare.
 - **Graders run `docker compose up` with no context.** Anything that requires manual setup, local paths, or "works on my machine" assumptions is a failure.
+- **Jabber/XMPP federation (section 6 of task):** explicitly marked OPTIONAL and advanced. Do NOT attempt until all core requirements are green and verified.
 
 ## ADLC Intent
 This project is structured to demonstrate Agentic Development Life Cycle (ADLC):
 - Task (`docs/task.md`) → Requirements (`docs/requirements.md`) → Stories (`docs/stories.md`) → Implementation.
 - `/process-task` automates the task-to-stories transformation.
 - Stories use a Jira-compatible markdown format, enabling downstream MCP integration (Atlassian Rovo / Jira MCP) to create real tickets from specs.
-- `/checkpoint` automates per-feature verification and documentation.
-- `/verify-deployable` simulates the grader's environment.
-- `docs/journal.md` captures decisions and learnings for post-hoc review.
+- `/add-feature` implements one story with plan → test → implement → verify → commit discipline.
+- `/checkpoint` automates per-feature verification and documentation in `docs/journal.md`.
+- `/verify-deployable` simulates the grader's environment (clean `docker compose up`).
+- `/journal-note` captures mid-feature observations (friction, decisions, aha moments) without requiring a checkpoint.
+- `docs/journal.md` is the narrative record of the development process — decisions, blockers, reflections, lessons.
 
-The goal is to prove that a well-designed pipeline of agent-facing artifacts (rules, commands, skills, context docs) produces higher-quality output than raw prompting.
+The goal is to prove that a well-designed pipeline of agent-facing artifacts (rules, commands, context docs) produces higher-quality output than raw prompting.
