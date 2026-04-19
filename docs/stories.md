@@ -266,15 +266,17 @@ As the chat, I need persistent, ordered, efficiently paginated messages so infin
 As a user, I want my message to appear for recipients in <3s without waiting on DB writes (FR-36, NFR-4, architecture §1).
 
 **Acceptance Criteria:**
-- [ ] `ChatHub : Hub` registered at `/hubs/chat`; auth required.
-- [ ] `JoinRoom` verifies membership (not banned) and adds connection to SignalR group `room:{id}`.
-- [ ] `SendMessage` writes a `MessageWorkItem` to the channel, acks the sender, broadcasts `MessageReceived` to `room:{id}`.
-- [ ] No DB call on the hot path of `SendMessage` (verified by test with DB disconnected — send still acks).
+- [x] `ChatHub : Hub` registered at `/hubs/chat`; auth required.
+- [x] `JoinRoom` verifies membership (not banned) and adds connection to SignalR group `room:{id}`.
+- [x] `SendMessage` writes a `MessageWorkItem` to the channel, acks the sender, broadcasts `MessageReceived` to `room:{id}`.
+- [x] No DB call on the hot path of `SendMessage` (verified by test with DB disconnected — send still acks).
 
 **Priority:** High
 **Labels:** api, realtime
 **Story Points:** 3
 **Traces to:** FR-36, FR-41, NFR-4 (Architecture Constraint §1)
+
+**Status:** Done (commit pending)
 
 ---
 

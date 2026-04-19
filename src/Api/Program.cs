@@ -36,6 +36,9 @@ builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.Converters.Add(new JsonStringEnumConverter());
 });
 
+builder.Services.AddSingleton<MessageQueue>();
+builder.Services.AddSignalR();
+
 builder.Services
     .AddAuthentication(SessionAuthenticationDefaults.SchemeName)
     .AddScheme<AuthenticationSchemeOptions, SessionAuthenticationHandler>(
@@ -72,6 +75,7 @@ app.UseAuthorization();
 app.MapAuthEndpoints();
 app.MapRoomEndpoints();
 app.MapMessageEndpoints();
+app.MapHub<ChatHub>("/hubs/chat");
 
 app.MapGet("/api/me", (ClaimsPrincipal user) => Results.Ok(new
 {

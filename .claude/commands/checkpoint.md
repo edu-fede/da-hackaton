@@ -11,7 +11,7 @@ Verify current work and record it in the development journal. Invoke after every
 ## Steps
 
 ### 1. Run all tests
-- **Backend:** `dotnet test` from repo root
+- **Backend:** `dotnet test --verbosity normal` from repo root (prints per-test pass/fail lines, so performance-sensitive assertions surface individually in the checkpoint output)
 - **Frontend:** `cd src/Web && npm test -- --run && cd ../..`
 
 If **any** test fails: STOP. Report the failing test(s) to the developer. Do not commit. Do not log. Wait for direction.
