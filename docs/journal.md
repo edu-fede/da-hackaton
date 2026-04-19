@@ -1250,3 +1250,80 @@ Single-digit-thousand output tokens across 13 file edits + tests + verification.
 Story 2.1 — **Friend requests + accept/remove**. First real new entity since 1.1 (Friendship as a relation on User). Prerequisites: EF migration design (self-referencing M:N with state, or a dedicated Friendship table — CLAUDE.md doesn't dictate), REST surface for request/accept/decline/remove, and a SignalR notification for the recipient when a new request arrives. The `ContactsPanel` UI lands as part of 2.1 and will immediately get presence dots for free via the existing `PresenceBadge` + `usePresence`. First design-heavy story in a while; worth a careful plan.
 
 ---
+
+### [2026-04-19 18:40 ART] Note — Insight
+
+**Within-session learning, caught in the act.** While reviewing the fix plan for Story 1.15's residual issues, I noticed claude-code had added `npm run build` as an explicit verification step — and then *justified it in writing* with something close to "the tsc regression this morning taught me to run this explicitly". It wasn't responding to a prompt, wasn't following a checklist I'd handed it, wasn't in CLAUDE.md. It had observed its own failure earlier in the day (a tsc regression that slipped through `dotnet test` + `vitest` because `tsc --noEmit` wasn't in the loop), incorporated the lesson, and modified its own verification protocol to prevent recurrence. And it *cited the incident by reference* when explaining the change.
+
+This is the behavior I've been hoping to see, and seeing it is qualitatively different from reading about it. Autocomplete doesn't do this. An IDE snippet engine doesn't do this. The agent is carrying forward lessons across tasks within a session, adjusting its methodology, and narrating the why. That's a meaningful line — the line between "faster typing" and "development collaborator that learns on the job". It's also the exact behavior CLAUDE.md's "Self-Improvement Loop" section asks for, but asking for it in a rules file is one thing; watching it happen autonomously on a concrete recurrence risk is another.
+
+Worth banking as a data point for the final writeup: **methodological self-learning within a session is observable, verifiable, and (more surprisingly) honest about its source** — claude-code didn't dress the change up as "best practice"; it named the specific earlier incident that motivated it. That transparency matters for trust. If the agent is changing its behavior, I want to know *why*, and today it told me unprompted.
+
+---
+
+### [2026-04-19 18:48 ART] Note — Insight
+
+**Yet another presence bug, yet again caught only in manual multi-browser smoke.** I am going to stop being surprised by this. The unit suite stays green, a single browser feels fine, and two browsers with two users immediately surface something. The case for a scripted multi-context Playwright smoke gets stronger each time I repeat this experience — *noting again* as a followup-candidate after MVP. For this specific bug the fix came together quickly with claude.ai's help.
+
+**What's actually interesting is what claude.ai volunteered during the fix review.** It flagged that the fix I was about to take mixes two responsibilities into a single endpoint (the `/members` endpoint that now also carries presence-adjacent data), and explicitly characterized the tradeoff: acceptable at this scale — MVP, 300 users, small rooms — and a reasonable candidate for separation later if rooms grow or if we'd want to cache the members roster aggressively without invalidating it on every presence transition. It didn't refuse the fix, didn't moralize about "proper" design; it named the tradeoff, named the conditions under which the tradeoff would flip, and let me take the fit-for-MVP path with eyes open. That is the shape of architectural feedback I'd want from a senior reviewer.
+
+**And the honest reflection:** would I have noticed that tradeoff on my own, at this pace, at this hour? I don't think I would have. I'd have seen the fix, confirmed it made the bug go away, and moved on. The design-shaped cost — "this endpoint now has two reasons to change" — is exactly the kind of thing that compounds into technical debt months later and feels, in the moment, like premature worry. Having a second set of eyes that defaults to surfacing those observations *without making them binding* is genuinely additive. It's also a specific counter-point to the earlier note about me "always agreeing with claude.ai's fixes" — the agreement is more defensible when the tradeoff has been named and accepted, versus silently adopted. This session I accepted the tradeoff; next time the tradeoff might flip. The important thing is I'll have been told about it.
+
+---
+
+## [2026-04-19 16:55 ART] — Fix: include current presence status in /members for initial snapshot
+
+**Story:** N/A — bug fix on top of Story 1.16 (caught in two-browser smoke minutes after landing 1.16).
+**Commit:** `fc85358` — fix(web,api): include current presence status in members API for initial snapshot.
+
+### What was built
+`GET /api/rooms/{id}/members` now returns `[{ userId, username, role, status }]`. The server composes each row's `status` from the in-memory `PresenceTracker` at query time — members absent from the tracker's dict are `Offline` by its invariant. On the frontend, `SignalRProvider` gained a new `seedPresence(entries)` method and `useSeedPresence()` hook; `MembersPanel` calls it immediately after the `/members` fetch so the shared presence map carries the server-side snapshot from the first render. Live `PresenceChanged` events continue to layer on top exactly as before.
+
+### ADLC traceability
+Fixes a regression against NFR-5 (presence updates visible within 2s of joining): Story 1.16 shipped a purely delta-driven client, so a user joining a room saw stale/offline badges for peers who had transitioned to Online before they subscribed. Indirectly satisfies FR-12 / FR-13 ("online/AFK indicators reflect reality") for the "cold-start" case. Decisions §8 (lazy push to relevant peers) is unaffected — the broadcast scope didn't change; we just added a snapshot pull for the subset of users the client is about to render.
+
+### Non-obvious decisions
+
+- **Decision:** Read presence status from the tracker on the existing `/members` endpoint rather than creating a separate `/api/rooms/{id}/presence` route.
+  **Alternatives considered:** (a) new dedicated `/presence` endpoint returning `Map<userId, status>`; (b) piggyback on the existing `/resync` endpoint the client already hits on connect; (c) push the snapshot over SignalR as a new `PresenceSnapshot` event fired on `OnConnectedAsync`.
+  **Why:** `/members` is the one endpoint the client is already hitting on room entry, and every member returned is exactly the set of users whose presence we want to know about in that moment. A separate `/presence` route would double the round-trips for zero new information. `/resync` is scoped to message watermarks and bringing it into presence would muddy its purpose. A SignalR `PresenceSnapshot` event would work but duplicates the mechanism (REST for members + socket for their statuses) and needs careful ordering vs live deltas. Cost of the chosen path: the endpoint now has two reasons to change (members-roster format OR presence-wire format). At MVP scale that coupling is acceptable; claude.ai flagged it explicitly during review as the condition-for-split-later.
+
+- **Decision:** `seedPresence` on the provider upserts Online/AFK and *deletes* Offline entries from the map, matching the live-delta rule.
+  **Alternatives considered:** seed Offline as `{status: 'Offline', at}` so the `PresenceBadge` renders a distinct "explicitly offline" glyph (vs the "unknown" fallback).
+  **Why:** keeping the invariant "map holds Online/AFK only; absence means Offline" means any consumer — `MembersPanel`, `MessageList`, and future contact lists from Story 2.1 — gets identical behavior whether the info arrived via delta or snapshot. The glyph for "Offline" and "Unknown" in `PresenceBadge` is the same open circle anyway, so nothing visual is lost.
+
+- **Decision:** `PresenceTracker.GetStatus` takes the per-user lock for the read.
+  **Alternatives considered:** lock-free read of the `Status` field.
+  **Why:** the field is written under a lock by other tracker methods; reading it lock-free would be a data race even if `PresenceStatus` is an enum (which is atomic on .NET). The extra lock cost is nil at our scale and keeps the code honest.
+
+### Friction and blockers
+
+- **Plan-mode approval flow oddity.** When I called `ExitPlanMode` the tool was rejected, yet the user's reply in the same message said "Go. Approved as-is." I interpreted that as "plan approved, skip the formal dialog" and started editing. A subsequent system reminder confirmed I had exited plan mode automatically — fine, but for a moment I wasn't sure if edits would be blocked. Not a blocker to the work, just a note that the "rejected tool call + approving message" combo is ambiguous from my side.
+
+- **Existing test `Members_returns_full_list_with_roles_for_member` needed a shape-check update.** The new `status` field is a pure addition so the existing assertions didn't fail; I tightened them to verify `status` is present on each row (without constraining its value, since the tracker state in that test isn't controlled). Developer's approval message flagged this explicitly — the tracker is empty in that test so the field will be `"Offline"` on both rows, so a stricter assertion would also hold. Left it loose deliberately: this test's purpose is "happy path shape"; the new `Members_includes_status_from_presence_tracker` and `Members_returns_Offline_when_users_not_in_presence_tracker` tests carry the value-constraining responsibility.
+
+- **Singleton-state leakage in backend tests.** The `PresenceTracker` is a DI singleton spanning all tests in the class. The new Online-status test calls `TrackConnection(joinerId, connId, …)` and needs to clean up or it leaks the entry. First draft of the teardown passed an empty-string connection ID to `RemoveConnection`, which is a no-op because `TryRemove` on a nonexistent key does nothing — the entry would have stayed. Caught it before running tests. Fixed by capturing the real `connId` and using it in `finally`. Tests themselves don't collide (each uses fresh user IDs from `Guid.NewGuid()`) but clean is clean, and if I ever add a test that does reuse IDs this would have been a source of flake.
+
+- **Three bugs in a row caught only in manual two-browser smoke (the owner-membership one, the F5 race, now this).** Same shape every time: single-actor tests are green, interaction between actors breaks. Now named as a persistent pattern in my own journal notes. The followup I keep deferring — a Playwright multi-context smoke run on CI — is increasingly the right investment. Not this weekend, but marked as a high-priority post-MVP item.
+
+### Verification evidence
+- Tests: 119 passing (99 backend — 2 new `Members_*` status tests + tightened shape assertion; 20 frontend — 1 new `MembersPanel seeds badges from API status before any PresenceChanged event` + sort test updated to seed from API instead of assuming all-offline).
+- Build: ✅ `dotnet build` + `npm run build` both clean.
+- `docker compose up -d --build`: ✅ api + web recreated. `/health` → 200.
+- End-to-end check: the new frontend test exercises the "snapshot-before-deltas" path deterministically (no `emitPresence` fired before the assertion). The manual two-browser smoke that surfaced the bug will now show online peers' ● immediately on room entry. Scripted multi-context E2E still deferred.
+
+### Reflection
+The failure mode is worth naming once and writing down: **any client architecture that consumes only deltas needs a snapshot seed for the state that existed before the client subscribed.** This is not a SignalR thing or a React thing — it's generic to event-sourced/stream-driven UIs. Every future "why is this stale on mount?" bug is probably the same shape, and the fix is almost always "fetch the current state from an endpoint that already exists, or add one if not." Worth banking as a checklist item for anything new that consumes a stream of updates: is there a snapshot pull on mount? If not, what does the UI show before the first event?
+
+### Time
+- **Agent wall clock:** ~20 min from the user's bug report to commit `fc85358`. Includes one plan-mode iteration (approved as-is) and one test-cleanup self-correction (the connectionId leak).
+- **Equivalent human work:** ~90 min for a senior dev. Breakdown: ~15 min framing the fix (is this a snapshot problem or a broadcast problem? the snapshot framing is the whole trick); ~10 min extending the tracker + contract + handler; ~15 min the frontend seed wiring; ~40 min tests (the presence-tracker-cleanup subtlety + getting the frontend snapshot test to exercise the right ordering took most of that); ~10 min verification and commit. Test time dominates again — the fix-to-test ratio continues to be roughly 1:3.
+- **(c) developer-time invested:** ~10 min. Developer wrote the precise bug report, named the root cause, named the fix, specified the response shape, and approved the plan as-is. That level of framing is what made the agent wall-clock 20 min rather than 90 — the design thinking was already done.
+
+### Cost so far (rough)
+No running total. One file-read cluster, one short exploration, seven edits, two test runs, two builds, one docker rebuild, two commits. Modest.
+
+### Next
+Story 2.1 — **Friend requests + accept/remove**. First new entity since Story 1.1 (Friendship). Design-heavy, worth careful plan-mode. The presence work from 1.15 / 1.16 + this snapshot fix drops in for free once the contact list UI exists: same `PresenceBadge`, same `usePresence`, same snapshot-on-mount pattern, just pointed at a different REST source.
+
+---
