@@ -467,7 +467,7 @@ As a user, I want standard chat message operations (FR-38, FR-39, FR-40).
 **Labels:** api, web, realtime, testing
 **Story Points:** 3
 **Traces to:** FR-38, FR-39, FR-40
-**Status:** Done (commit pending). Edit of a deleted message returns 410 Gone; delete of already-deleted message is idempotent 204. No optimistic UI mutation — broadcast is the source of truth. Viewer role sourced from `/api/me/rooms` via `MyRoomEntry.Role` (undefined for catalog-entry users → no admin affordances).
+**Status:** Done (commit 507a9df). Edit of a deleted message returns 410 Gone; delete of already-deleted message is idempotent 204. No optimistic UI mutation — broadcast is the source of truth. Viewer role sourced from `/api/me/rooms` via `MyRoomEntry.Role` (undefined for catalog-entry users → no admin affordances).
 
 ---
 

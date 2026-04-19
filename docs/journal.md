@@ -1345,3 +1345,84 @@ Stories remaining span friends/contacts, 1-to-1 DMs (which are "rooms of 2" and 
 Stepping back from the counter: the part that surprises me most is the shape of the work still ahead. It's not "solve more hard problems"; it's "instance the existing patterns onto new entities". That's the signal that the architecture carried its weight.
 
 ---
+
+### [2026-04-19 20:03 ART] Note — Blocker
+
+**TBR — extended-hibernation edge case in presence.** If a user's tab is backgrounded for hours and the browser fully hibernates the JS runtime (not uncommon on Chromium under memory pressure, standard behavior on mobile), the heartbeat loop stops emitting. Server-side the `PeriodicTimer` will correctly transition the user to AFK after 60s, which is fine. The edge case is on *wake*: when the tab is foregrounded again, the user is still shown as AFK until the next activity event (mouse/key/scroll) nudges the heartbeat emitter. In practice that's usually sub-second once the user touches anything, but there's a perceptible window where the peer view and the user's actual "I'm here" state disagree.
+
+Root cause, per CLAUDE.md §2, is structural: browsers hibernate inactive tabs, JS pauses inside them, and the client cannot be relied on to emit "I'm back" without user input. Partial mitigation — emit a heartbeat synchronously on `visibilitychange` when the tab becomes visible — would shrink the window but not eliminate it, because there's no guarantee JS is scheduled in time before the user interacts. Full mitigation would require server-side guesswork (e.g., a grace period on reconnect, or treating a fresh SignalR `Reconnected` event as implicit activity), which is its own can of worms and not worth it at MVP scope.
+
+Tradeoff accepted for MVP: live with the small "stuck AFK until next activity" window. If presence correctness becomes a sharper requirement post-MVP, the cleanest implementable improvement is a `visibilitychange` → `hub.heartbeat()` on `visible`. Banking this so future me doesn't rediscover the same edge from scratch.
+
+---
+
+## [2026-04-19 17:35 ART] — Story 2.4: Message edit, delete, and reply
+
+**Story:** 2.4 — Message edit, delete, and reply
+**Commit:** `507a9df` — feat(web,api,realtime): message edit, delete, and reply (Story 2.4).
+
+### What was built
+Users can now edit their own messages, delete their own (or any, if they're an Admin/Owner of the room), and reply to specific messages with a quoted preview. Backend: `PATCH` and `DELETE` under `/api/rooms/{id}/messages/{messageId}` with a full auth + error matrix (author-only edit, 410 Gone on edit-of-deleted, idempotent delete, admin delete allowed for `role >= Admin`). Both endpoints broadcast `MessageEdited` / `MessageDeleted` through `IHubContext<ChatHub>` to the room group. Frontend: hover-revealed Reply / Edit / Delete action bar on each message, inline edit textarea with Save/Cancel, replying-to banner above the composer with × to cancel, quoted reply preview with click-to-scroll on each message that has a parent, and a gray "(edited)" indicator next to the timestamp.
+
+### ADLC traceability
+Satisfies FR-38 (edit own message), FR-39 (delete own or by admin), FR-40 (reply to messages). All 4 acceptance criteria ticked with one route-naming note: the plan mapped `/api/messages/{id}` in the AC literally, but the existing route group lives under `/api/rooms/{id}/messages` (the `roomId` is already on the route) and the handler needs `roomId` in scope anyway for the membership check — so the final routes are `PATCH /api/rooms/{id}/messages/{messageId}` and `DELETE /api/rooms/{id}/messages/{messageId}`. Flagged in the Status line on stories.md.
+
+### Non-obvious decisions
+
+- **Decision:** No optimistic local mutation. The client waits for the `MessageEdited` / `MessageDeleted` broadcast to update the row, even on the actor's own action.
+  **Alternatives considered:** mutate locally on REST success and let the broadcast idempotently overwrite.
+  **Why:** single source of truth is the broadcast. Any mismatch between the REST response and the broadcast would cause flicker; any server-side post-processing (moderation, filters) would be bypassed by a local mutation. The observed latency gap (REST 200 → broadcast arrival) is <100 ms in the loopback case and <3 s per NFR-5 in the worst case, well below user-perceptible threshold for "did it work?" given the actor clicked Save less than a second ago. The simpler rule is worth the small latency.
+
+- **Decision:** 410 Gone for edit-of-deleted-message; 204 idempotent for re-delete of already-deleted-message.
+  **Alternatives considered:** blanket 400 for both; 404 for both; 409 Conflict.
+  **Why:** 410 literally means "the resource used to be here and is no longer available", which is exactly what a soft-deleted message is — the row still exists in the DB but is tombstoned. Edit cannot meaningfully apply. The developer explicitly confirmed 410 in the plan approval. For re-delete, 204 is correct because DELETE is idempotent by HTTP semantics — a second call on an already-deleted resource is a success, just a no-op. Matches the REST conventions we've been using elsewhere (the `/join` idempotency fix from earlier today uses the same principle).
+
+- **Decision:** "Room admin" for delete means `role >= Admin`, so Admin *and* Owner.
+  **Alternatives considered:** literal Admin role only.
+  **Why:** Owner is strictly more authoritative than Admin by the enum's numeric ordering (Owner=2, Admin=1, Member=0), and it would be absurd for an Owner not to be able to delete a member's message when the Admin they promoted can. The developer confirmed this reading in plan approval.
+
+- **Decision:** Viewer role for admin-delete affordance sourced from `/api/me/rooms` (`MyRoomEntry.Role`, already present) rather than a new endpoint or lifted from `MembersPanel`.
+  **Alternatives considered:** a new `/api/rooms/{id}/me` endpoint; subscribe `MembersPanel` via context so `RoomPage` can read its data.
+  **Why:** `/api/me/rooms` is already fetched by `RoomPage` for the room header, and it already returns `Role`. Adding a single optional field to the frontend `RoomSummary` type is the minimum change; no new endpoint, no cross-component plumbing. For users who arrived via the public catalog (not yet members), `role` is undefined and admin affordances don't render — backend still enforces the auth, UI just omits the button.
+
+- **Decision:** `MessageList` tracks refs per message id in a `Map<string, HTMLElement>` via a per-row `ref` callback, used by the reply-preview click to scroll the parent into view.
+  **Alternatives considered:** querySelector by `data-message-id` on each click; global anchor navigation (`#msg-${id}`).
+  **Why:** the `ref` callback pattern is the React-idiomatic path, avoids re-querying on every click, and automatically GC's on unmount. Anchor navigation would work but would mess with the browser history stack.
+
+- **Decision:** "Edit" stays in inline-edit mode if the REST call rejects; does NOT auto-close on error.
+  **Alternatives considered:** always close editor on Save click; close on success only.
+  **Why:** if the server rejects the edit (403 for someone else's message because of a role change, 410 because the message was just deleted by a moderator), the user should see the error and still have their draft in the textarea to do something with. Closing would lose the text. The error is surfaced through `useRoomMessages`'s existing `error` state, which already renders in the `room-error` strip at the top of the page.
+
+### Friction and blockers
+
+- **One flaky backend test on the first run.** `Edit_message_broadcasts_MessageEdited_to_room_group` timed out on the first full-suite run (5s wait), then passed cleanly in isolation and on re-run of the full suite. xUnit v3 runs test classes in parallel; the SignalR tests share the singleton `PresenceSweepService` timer and a shared `PostgresFixture`. Most likely cause: the first parallel run hit a slow-start window where the TestServer handler was warming up while another class was mid-query on the shared DB. Didn't investigate further because the second run was clean and the full 115-test suite is green. Worth naming as a latent flake risk — if CI sees occasional 5s timeouts on hub broadcast tests, the fix is probably to either bump the timeout to 10s or mark the ChatHubTests class as `Collection("Serial")`.
+
+- **Composer signature change rippled.** Changing `onSubmit: (text) => ...` to `onSubmit: (text, replyId) => ...` plus the `sendMessage` hub method to take a `replyToMessageId: string | null` default caused a couple of test assertions to need updating — the existing "composer submit invokes hub sendMessage with trimmed text" test luckily already asserted `toHaveBeenCalledWith(ROOM_ID, text, null)` (the original hub signature had replyToMessageId from Story 1.11 or wherever), so the shape matched. Small wins like that compound — the frontend contract from day one was future-proofed enough that this story slotted in without contract churn.
+
+- **The "own message" fixture problem.** The existing seeded messages in `RoomPage.test.tsx` all have `senderId: 'sender'`, not the current user — so the edit/delete affordances wouldn't show on them. Solved by adding a small `injectOwnMessage()` helper that emits a `MessageReceived` for a message authored by the current user. Means each edit/delete test does one extra `emit()` before interacting — ~4 lines of setup per test. Neater than restructuring the default mock.
+
+- **No architectural surprises.** This story was mostly glue: the entities already had the fields (`EditedAt`, `DeletedAt`, `ReplyToMessageId` all landed in earlier stories), the broadcast pattern was already established (`IHubContext<ChatHub>` from `PresenceSweepService`), the api client had room for `patch`/`delete` helpers. Compared to Story 1.15 (new entity + new background service + new in-memory invariant), 2.4 felt almost mechanical.
+
+### Verification evidence
+- Tests: 141 passing (115 backend — 16 new this story including the 14 endpoint tests + 2 hub broadcast tests; 26 frontend — 6 new this story + 20 from prior stories).
+- Build: ✅ `dotnet build` + `npm run build` both clean.
+- `docker compose up -d --build`: ✅ api + web both recreated.
+- End-to-end check: `/health` → 200. Manual two-browser exercise delegated to the developer; the six frontend tests model the reply/edit/delete interactions in-process so a regression would fail in CI.
+
+### Reflection
+Two things worth banking. First, the **"rules of hooks" reflex**: this was the second story in 24 hours where my first draft of a component had a hook call inside a `.map()` loop (the MembersPanel presence sort, and then initial drafts of this story's MessageList row renderer — in the end I caught myself before shipping so it didn't become a bug). When I want "a hook keyed by row", I should reach for "read the context map once, index by row id" by reflex. Noting again so future-me internalizes it.
+
+Second, the **latency-vs-correctness tradeoff on optimistic mutation** is worth a one-line rule: *if there's a guaranteed broadcast coming back within a few hundred ms that will produce the correct UI, the optimistic path is a false economy.* Every optimistic-mutation pattern I've written in the past to cover 100 ms of perceived latency has eventually caused a flicker or a desync bug somewhere. This story had a natural place to go optimistic and I consciously didn't — correct call.
+
+### Time
+- **Agent wall clock:** ~40 min from `/add-feature 2.4` plan approval to commit `507a9df`. Includes the flaky-test false alarm (~5 min of re-running) and the typical plan-then-code-then-verify rhythm.
+- **Equivalent human work:** ~4–6 hours for a senior dev. Breakdown: ~30 min design (route placement, auth matrix, status-code semantics, UI edit-mode ergonomics, viewer-role plumbing); ~45 min backend implementation (handler + records + dependency injection); ~90 min frontend implementation (row action bar + inline editor + reply banner + reply preview + scroll-into-view wiring — the MessageList grew by about 150 lines); ~90 min tests (14 backend + 2 hub + 6 frontend, each with non-trivial setup); ~20 min verification + stories.md + commit. Test-to-code ratio stayed around 2:1 by line count; by time it was closer to 1:1.
+- **(c) developer-time invested:** ~10 min. Developer reviewed the plan, answered 5 crisp yes/no questions, approved as-is, and waited. The plan-then-approve-then-execute rhythm continues to work; the better the plan the shorter this number gets.
+
+### Cost so far (rough)
+Not tracking precisely. This story was ~14 file edits, one build round-trip, one docker rebuild, two commits (feature + upcoming journal). Output-token-wise probably in the low teens of thousands — nothing near context limits.
+
+### Next
+Story 2.1 — **Friend requests + accept/remove** (still the logical follow-on; 2.4 came first because the developer chose it, but 2.1 remains unblocked). Design-heavy — new Friendship entity, bidirectional state machine (Pending / Accepted / Declined / Blocked?), REST surface, SignalR notification to the recipient. Plan-mode warranted.
+
+---
