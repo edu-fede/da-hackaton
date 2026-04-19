@@ -14,6 +14,8 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
 
     public DbSet<RoomBan> RoomBans => Set<RoomBan>();
 
+    public DbSet<Message> Messages => Set<Message>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -94,6 +96,28 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
                 .HasForeignKey(b => b.BannedByUserId)
                 .OnDelete(DeleteBehavior.SetNull);
             ban.HasIndex(b => b.UserId);
+        });
+
+        modelBuilder.Entity<Message>(message =>
+        {
+            message.HasKey(m => m.Id);
+            message.Property(m => m.Text).IsRequired();
+            message.Property(m => m.CreatedAt).IsRequired();
+            message.Property(m => m.SequenceInRoom).IsRequired();
+            message.HasOne(m => m.Room)
+                .WithMany()
+                .HasForeignKey(m => m.RoomId)
+                .OnDelete(DeleteBehavior.Cascade);
+            message.HasOne(m => m.Sender)
+                .WithMany()
+                .HasForeignKey(m => m.SenderId)
+                .OnDelete(DeleteBehavior.Restrict);
+            message.HasOne(m => m.ReplyToMessage)
+                .WithMany()
+                .HasForeignKey(m => m.ReplyToMessageId)
+                .OnDelete(DeleteBehavior.SetNull);
+            message.HasIndex(m => new { m.RoomId, m.SequenceInRoom }).IsUnique();
+            message.HasIndex(m => m.SenderId);
         });
     }
 }

@@ -243,16 +243,18 @@ As a user, I want to see and interact with rooms in the sidebar per Appendix A l
 As the chat, I need persistent, ordered, efficiently paginated messages so infinite scroll works at 10K+ messages (FR-41, FR-42, NFR-6, NFR-7, NFR-8).
 
 **Acceptance Criteria:**
-- [ ] `Message { Id, RoomId, SenderId, Text, CreatedAt, EditedAt?, DeletedAt?, ReplyToMessageId?, SequenceInRoom }`.
-- [ ] Unique constraint `(RoomId, SequenceInRoom)`.
-- [ ] Insert computes `SequenceInRoom = COALESCE(MAX, 0) + 1` scoped to the room, safe under concurrency (rely on unique constraint + retry).
-- [ ] History endpoint returns page ordered by `SequenceInRoom DESC`, size capped (e.g., 50), cursor-based via `beforeSeq`.
-- [ ] Load test-ish sanity: 10,000 messages in a room, history endpoint returns the latest page in <200ms.
+- [x] `Message { Id, RoomId, SenderId, Text, CreatedAt, EditedAt?, DeletedAt?, ReplyToMessageId?, SequenceInRoom }`.
+- [x] Unique constraint `(RoomId, SequenceInRoom)`.
+- [x] Insert computes `SequenceInRoom = COALESCE(MAX, 0) + 1` scoped to the room, safe under concurrency (rely on unique constraint + retry).
+- [x] History endpoint returns page ordered by `SequenceInRoom DESC`, size capped (e.g., 50), cursor-based via `beforeSeq`.
+- [x] Load test-ish sanity: 10,000 messages in a room, history endpoint returns the latest page in <200ms.
 
 **Priority:** High
 **Labels:** api, db, testing
 **Story Points:** 3
 **Traces to:** FR-41, FR-42, NFR-6, NFR-7
+
+**Status:** Done (commit pending)
 
 ---
 

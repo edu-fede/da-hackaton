@@ -2,6 +2,7 @@ using System.Security.Claims;
 using System.Text.Json.Serialization;
 using Hackaton.Api.Auth;
 using Hackaton.Api.Data;
+using Hackaton.Api.Messages;
 using Hackaton.Api.Rooms;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Identity;
@@ -70,6 +71,7 @@ app.UseAuthorization();
 
 app.MapAuthEndpoints();
 app.MapRoomEndpoints();
+app.MapMessageEndpoints();
 
 app.MapGet("/api/me", (ClaimsPrincipal user) => Results.Ok(new
 {
