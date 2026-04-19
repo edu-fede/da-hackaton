@@ -358,4 +358,85 @@ public class ChatHubTests(ApiFactory factory) : IClassFixture<ApiFactory>
             await _factory.UnpausePostgresAsync();
         }
     }
+
+    [Fact]
+    public async Task Edit_message_broadcasts_MessageEdited_to_room_group()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var (authorHttp, authorCookie, authorId) = await AuthenticatedClientAsync(ct);
+        var (_, receiverCookie, receiverId) = await AuthenticatedClientAsync(ct);
+        var roomId = await CreateRoomAndAddMemberAsync(authorHttp, receiverId, ct);
+
+        Guid messageId;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            messageId = Guid.NewGuid();
+            db.Messages.Add(new Message
+            {
+                Id = messageId,
+                RoomId = roomId,
+                SenderId = authorId,
+                Text = "original",
+                CreatedAt = DateTimeOffset.UtcNow,
+                SequenceInRoom = 1,
+            });
+            await db.SaveChangesAsync(ct);
+        }
+
+        await using var receiver = BuildHubConnection(receiverCookie);
+        var received = new TaskCompletionSource<MessageEditedBroadcast>();
+        receiver.On<MessageEditedBroadcast>("MessageEdited", p => received.TrySetResult(p));
+        await receiver.StartAsync(ct);
+
+        var response = await authorHttp.PatchAsJsonAsync(
+            $"/api/rooms/{roomId}/messages/{messageId}",
+            new { text = "revised" },
+            ct);
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var payload = await received.Task.WaitAsync(TimeSpan.FromSeconds(5), ct);
+        payload.Id.Should().Be(messageId);
+        payload.RoomId.Should().Be(roomId);
+        payload.Text.Should().Be("revised");
+    }
+
+    [Fact]
+    public async Task Delete_message_broadcasts_MessageDeleted_to_room_group()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var (authorHttp, authorCookie, authorId) = await AuthenticatedClientAsync(ct);
+        var (_, receiverCookie, receiverId) = await AuthenticatedClientAsync(ct);
+        var roomId = await CreateRoomAndAddMemberAsync(authorHttp, receiverId, ct);
+
+        Guid messageId;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            messageId = Guid.NewGuid();
+            db.Messages.Add(new Message
+            {
+                Id = messageId,
+                RoomId = roomId,
+                SenderId = authorId,
+                Text = "original",
+                CreatedAt = DateTimeOffset.UtcNow,
+                SequenceInRoom = 1,
+            });
+            await db.SaveChangesAsync(ct);
+        }
+
+        await using var receiver = BuildHubConnection(receiverCookie);
+        var received = new TaskCompletionSource<MessageDeletedBroadcast>();
+        receiver.On<MessageDeletedBroadcast>("MessageDeleted", p => received.TrySetResult(p));
+        await receiver.StartAsync(ct);
+
+        var response = await authorHttp.DeleteAsync($"/api/rooms/{roomId}/messages/{messageId}", ct);
+        response.StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        var payload = await received.Task.WaitAsync(TimeSpan.FromSeconds(5), ct);
+        payload.Id.Should().Be(messageId);
+        payload.RoomId.Should().Be(roomId);
+        payload.DeletedAt.Should().NotBe(default(DateTimeOffset));
+    }
 }

@@ -4,17 +4,27 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { AuthProvider } from '../auth/AuthProvider';
 import { RoomPage } from './RoomPage';
 import { SignalRProvider } from '../signalr/SignalRProvider';
-import type { ChatHubClient, MessageBroadcast, PresenceBroadcastPayload } from '../signalr/ChatHubClient';
+import type {
+  ChatHubClient,
+  MessageBroadcast,
+  MessageDeletedBroadcast,
+  MessageEditedBroadcast,
+  PresenceBroadcastPayload,
+} from '../signalr/ChatHubClient';
 
 type MessageReceivedHandler = (m: MessageBroadcast) => void;
 type PresenceHandler = (p: PresenceBroadcastPayload) => void;
+type MessageEditedHandler = (p: MessageEditedBroadcast) => void;
+type MessageDeletedHandler = (p: MessageDeletedBroadcast) => void;
 
 class FakeHub {
   private handlers: MessageReceivedHandler[] = [];
   private presenceHandlers: PresenceHandler[] = [];
+  private editHandlers: MessageEditedHandler[] = [];
+  private deleteHandlers: MessageDeletedHandler[] = [];
   private connectedResolvers: Array<() => void> = [];
   state: 'Connecting' | 'Connected' | 'Disconnected' = 'Connected';
-  sendMessage = vi.fn(async (_roomId: string, _text: string) => undefined);
+  sendMessage = vi.fn(async (_roomId: string, _text: string, _replyToMessageId: string | null) => undefined);
   joinRoom = vi.fn(async (_roomId: string) => undefined);
   leaveRoom = vi.fn(async (_roomId: string) => undefined);
   start = vi.fn(async () => undefined);
@@ -38,12 +48,30 @@ class FakeHub {
       this.presenceHandlers = this.presenceHandlers.filter((x) => x !== h);
     };
   });
+  onMessageEdited = vi.fn((h: MessageEditedHandler) => {
+    this.editHandlers.push(h);
+    return () => {
+      this.editHandlers = this.editHandlers.filter((x) => x !== h);
+    };
+  });
+  onMessageDeleted = vi.fn((h: MessageDeletedHandler) => {
+    this.deleteHandlers.push(h);
+    return () => {
+      this.deleteHandlers = this.deleteHandlers.filter((x) => x !== h);
+    };
+  });
   onReconnected = vi.fn(() => () => undefined);
   emit(message: MessageBroadcast) {
     for (const h of this.handlers) h(message);
   }
   emitPresence(payload: PresenceBroadcastPayload) {
     for (const h of this.presenceHandlers) h(payload);
+  }
+  emitEdit(payload: MessageEditedBroadcast) {
+    for (const h of this.editHandlers) h(payload);
+  }
+  emitDelete(payload: MessageDeletedBroadcast) {
+    for (const h of this.deleteHandlers) h(payload);
   }
   markConnected() {
     this.state = 'Connected';
@@ -139,6 +167,14 @@ describe('RoomPage', () => {
       if (url.includes(`/api/rooms/${ROOM_ID}/messages`)) {
         const seed = [buildMessage(1), buildMessage(2), buildMessage(3)];
         return jsonResponse(200, seed);
+      }
+      if (url.match(new RegExp(`/api/rooms/${ROOM_ID}/messages/[0-9a-z-]+$`))) {
+        if (method === 'PATCH') {
+          return jsonResponse(200, { id: 'ignored', roomId: ROOM_ID, text: 'ignored', editedAt: '2026-04-19T00:05:00Z' });
+        }
+        if (method === 'DELETE') {
+          return new Response(null, { status: 204 });
+        }
       }
       if (url.endsWith(`/api/rooms/${ROOM_ID}/members`) && method === 'GET') {
         return jsonResponse(200, [
@@ -347,6 +383,155 @@ describe('RoomPage', () => {
       const firstRowAfter = screen.getAllByTestId('message-row')[0];
       const badge = within(firstRowAfter).getByTestId('presence-badge');
       expect(badge).toHaveAttribute('data-presence', 'AFK');
+    });
+  });
+
+  // ----- Story 2.4: edit, delete, reply -----
+
+  function injectOwnMessage(overrides: Partial<MessageEntry> = {}) {
+    act(() => {
+      fakeHub.emit({
+        id: overrides.id ?? 'own-msg',
+        roomId: ROOM_ID,
+        senderId: currentUser.id,
+        senderUsername: currentUser.username,
+        text: overrides.text ?? 'my own message',
+        createdAt: '2026-04-19T00:10:00Z',
+        replyToMessageId: overrides.replyToMessageId ?? null,
+        sequenceInRoom: overrides.sequenceInRoom ?? 4,
+      });
+    });
+  }
+
+  function findRow(id: string): HTMLElement {
+    return screen
+      .getAllByTestId('message-row')
+      .find((r) => r.getAttribute('data-message-id') === id)!;
+  }
+
+  test('clicking Reply opens the composer banner and subsequent send passes replyToMessageId', async () => {
+    renderRoom();
+    await waitFor(() => expect(screen.getAllByTestId('message-row')).toHaveLength(3));
+
+    const target = findRow('msg-2');
+    fireEvent.click(within(target).getByTestId('reply-button'));
+
+    expect(screen.getByTestId('reply-banner')).toBeInTheDocument();
+
+    const textarea = screen.getByTestId('composer-input');
+    fireEvent.change(textarea, { target: { value: 'yes to msg-2' } });
+    fireEvent.click(screen.getByRole('button', { name: /send/i }));
+
+    await waitFor(() => expect(fakeHub.sendMessage).toHaveBeenCalledTimes(1));
+    expect(fakeHub.sendMessage).toHaveBeenCalledWith(ROOM_ID, 'yes to msg-2', 'msg-2');
+
+    // Banner clears after send.
+    expect(screen.queryByTestId('reply-banner')).not.toBeInTheDocument();
+  });
+
+  test('MessageEdited event updates the message text and renders the (edited) indicator', async () => {
+    renderRoom();
+    await waitFor(() => expect(screen.getAllByTestId('message-row')).toHaveLength(3));
+
+    act(() => {
+      fakeHub.emitEdit({
+        id: 'msg-1',
+        roomId: ROOM_ID,
+        text: 'hello 1 — updated',
+        editedAt: '2026-04-19T00:06:00Z',
+      });
+    });
+
+    await waitFor(() => expect(screen.getByText('hello 1 — updated')).toBeInTheDocument());
+    expect(screen.queryByText('hello 1')).not.toBeInTheDocument();
+    const row = findRow('msg-1');
+    expect(within(row).getByTestId('edited-indicator')).toBeInTheDocument();
+  });
+
+  test('MessageDeleted event replaces the message with a tombstone placeholder', async () => {
+    renderRoom();
+    await waitFor(() => expect(screen.getAllByTestId('message-row')).toHaveLength(3));
+
+    act(() => {
+      fakeHub.emitDelete({
+        id: 'msg-2',
+        roomId: ROOM_ID,
+        deletedAt: '2026-04-19T00:07:00Z',
+      });
+    });
+
+    await waitFor(() => {
+      const row = findRow('msg-2');
+      expect(within(row).getByText('(message deleted)')).toBeInTheDocument();
+    });
+    expect(screen.queryByText('hello 2')).not.toBeInTheDocument();
+  });
+
+  test('reply preview renders the parent sender and text; clicking it invokes scrollIntoView on the parent', async () => {
+    renderRoom();
+    await waitFor(() => expect(screen.getAllByTestId('message-row')).toHaveLength(3));
+
+    // Inject a live message that replies to msg-1 (seeded, parent loaded).
+    injectOwnMessage({ id: 'reply-msg', text: 'responding', replyToMessageId: 'msg-1' });
+    await waitFor(() => expect(screen.getAllByTestId('message-row')).toHaveLength(4));
+
+    const replyRow = findRow('reply-msg');
+    const preview = within(replyRow).getByTestId('reply-preview');
+    expect(preview).toHaveTextContent('user-1');
+    expect(preview).toHaveTextContent('hello 1');
+
+    const parentRow = findRow('msg-1');
+    const scrollSpy = vi.fn();
+    parentRow.scrollIntoView = scrollSpy;
+
+    fireEvent.click(preview);
+    expect(scrollSpy).toHaveBeenCalledTimes(1);
+  });
+
+  test('Edit on own message opens an inline editor and Save sends PATCH to the API', async () => {
+    renderRoom();
+    await waitFor(() => expect(screen.getAllByTestId('message-row')).toHaveLength(3));
+    injectOwnMessage();
+    await waitFor(() => expect(screen.getAllByTestId('message-row')).toHaveLength(4));
+
+    const ownRow = findRow('own-msg');
+    fireEvent.click(within(ownRow).getByTestId('edit-button'));
+
+    const textarea = screen.getByTestId('edit-textarea') as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: 'my own message — edited' } });
+    fireEvent.click(screen.getByTestId('edit-save'));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringContaining(`/api/rooms/${ROOM_ID}/messages/own-msg`),
+        expect.objectContaining({ method: 'PATCH' }),
+      );
+    });
+    const patchCall = fetchMock.mock.calls.find(
+      ([url, init]) =>
+        typeof url === 'string' &&
+        url.includes(`/api/rooms/${ROOM_ID}/messages/own-msg`) &&
+        (init as RequestInit | undefined)?.method === 'PATCH',
+    );
+    expect(patchCall).toBeDefined();
+    const body = JSON.parse(((patchCall![1] as RequestInit).body as string) ?? '{}');
+    expect(body).toEqual({ text: 'my own message — edited' });
+  });
+
+  test('Delete on own message sends DELETE to the API', async () => {
+    renderRoom();
+    await waitFor(() => expect(screen.getAllByTestId('message-row')).toHaveLength(3));
+    injectOwnMessage();
+    await waitFor(() => expect(screen.getAllByTestId('message-row')).toHaveLength(4));
+
+    const ownRow = findRow('own-msg');
+    fireEvent.click(within(ownRow).getByTestId('delete-button'));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringContaining(`/api/rooms/${ROOM_ID}/messages/own-msg`),
+        expect.objectContaining({ method: 'DELETE' }),
+      );
     });
   });
 });

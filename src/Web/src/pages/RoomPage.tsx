@@ -1,24 +1,41 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { api } from '../api/client';
+import { useAuth } from '../auth/AuthProvider';
 import { MembersPanel } from '../components/MembersPanel';
 import { MessageComposer } from '../components/MessageComposer';
 import { MessageList } from '../components/MessageList';
 import { Sidebar } from '../components/Sidebar';
 import { useRoomMessages } from '../hooks/useRoomMessages';
+import type { ChatMessage } from '../hooks/useRoomMessages';
+
+type RoomRole = 'Owner' | 'Admin' | 'Member';
 
 type RoomSummary = {
   id: string;
   name: string;
   description: string;
   visibility: 'Public' | 'Private' | 'Personal';
+  role?: RoomRole;
 };
 
 export function RoomPage() {
   const { id } = useParams();
   const navigate = useNavigate();
-  const { messages, hasMoreHistory, loading, sending, error, send, loadOlder } = useRoomMessages(id);
+  const { user } = useAuth();
+  const {
+    messages,
+    hasMoreHistory,
+    loading,
+    sending,
+    error,
+    send,
+    editMessage,
+    deleteMessage,
+    loadOlder,
+  } = useRoomMessages(id);
   const [room, setRoom] = useState<RoomSummary | null>(null);
+  const [replyingTo, setReplyingTo] = useState<ChatMessage | null>(null);
 
   useEffect(() => {
     if (!id) return;
@@ -43,6 +60,14 @@ export function RoomPage() {
       cancelled = true;
     };
   }, [id]);
+
+  // If the replied-to message gets deleted from the local state (edge case), clear the pointer.
+  useEffect(() => {
+    if (!replyingTo) return;
+    if (!messages.some((m) => m.id === replyingTo.id)) {
+      setReplyingTo(null);
+    }
+  }, [messages, replyingTo]);
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col">
@@ -82,8 +107,18 @@ export function RoomPage() {
               hasMoreHistory={hasMoreHistory}
               loading={loading}
               onReachTop={loadOlder}
+              currentUserId={user?.id}
+              viewerRole={room?.role}
+              onReply={(m) => setReplyingTo(m)}
+              onEdit={editMessage}
+              onDelete={deleteMessage}
             />
-            <MessageComposer onSubmit={send} sending={sending} />
+            <MessageComposer
+              onSubmit={send}
+              replyingTo={replyingTo}
+              onClearReply={() => setReplyingTo(null)}
+              sending={sending}
+            />
           </div>
           {id && <MembersPanel roomId={id} />}
         </section>

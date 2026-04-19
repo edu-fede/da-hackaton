@@ -458,15 +458,16 @@ As a user, I want personal DMs to behave exactly like rooms (FR-35), reusing the
 As a user, I want standard chat message operations (FR-38, FR-39, FR-40).
 
 **Acceptance Criteria:**
-- [ ] `PATCH /api/messages/{id}` by author sets `EditedAt`; hub broadcasts `MessageEdited`.
-- [ ] `DELETE /api/messages/{id}` by author OR room admin sets `DeletedAt`; hub broadcasts `MessageDeleted`; body replaced with "deleted" placeholder client-side.
-- [ ] Reply-to renders a quoted preview of the parent; clicking scrolls to the parent if loaded.
-- [ ] Edited messages show a gray "edited" indicator.
+- [x] `PATCH /api/messages/{id}` by author sets `EditedAt`; hub broadcasts `MessageEdited`. (Routed as `PATCH /api/rooms/{id}/messages/{messageId}` to match the existing route group.)
+- [x] `DELETE /api/messages/{id}` by author OR room admin sets `DeletedAt`; hub broadcasts `MessageDeleted`; body replaced with "deleted" placeholder client-side. (Admin = `role >= Admin`, so Admin + Owner.)
+- [x] Reply-to renders a quoted preview of the parent; clicking scrolls to the parent if loaded.
+- [x] Edited messages show a gray "edited" indicator.
 
 **Priority:** Medium
 **Labels:** api, web, realtime, testing
 **Story Points:** 3
 **Traces to:** FR-38, FR-39, FR-40
+**Status:** Done (commit pending). Edit of a deleted message returns 410 Gone; delete of already-deleted message is idempotent 204. No optimistic UI mutation — broadcast is the source of truth. Viewer role sourced from `/api/me/rooms` via `MyRoomEntry.Role` (undefined for catalog-entry users → no admin affordances).
 
 ---
 

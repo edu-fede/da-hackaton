@@ -37,7 +37,9 @@ export type UseRoomMessagesResult = {
   loading: boolean;
   sending: boolean;
   error: string | null;
-  send: (text: string) => Promise<void>;
+  send: (text: string, replyToMessageId?: string | null) => Promise<void>;
+  editMessage: (messageId: string, newText: string) => Promise<void>;
+  deleteMessage: (messageId: string) => Promise<void>;
   loadOlder: () => Promise<void>;
 };
 
@@ -141,9 +143,29 @@ export function useRoomMessages(roomId: string | undefined): UseRoomMessagesResu
       });
     });
 
+    const offEdit = hub.onMessageEdited((edited) => {
+      if (edited.roomId !== roomId) return;
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === edited.id ? { ...m, text: edited.text, editedAt: edited.editedAt } : m,
+        ),
+      );
+    });
+
+    const offDelete = hub.onMessageDeleted((deleted) => {
+      if (deleted.roomId !== roomId) return;
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === deleted.id ? { ...m, text: null, deletedAt: deleted.deletedAt } : m,
+        ),
+      );
+    });
+
     return () => {
       cancelled = true;
       off();
+      offEdit();
+      offDelete();
       if (joinedRef.current === roomId) {
         hub.leaveRoom(roomId).catch(() => undefined);
         joinedRef.current = null;
@@ -152,14 +174,14 @@ export function useRoomMessages(roomId: string | undefined): UseRoomMessagesResu
   }, [roomId, hub]);
 
   const send = useCallback(
-    async (text: string) => {
+    async (text: string, replyToMessageId: string | null = null) => {
       if (!hub || !roomId) return;
       const trimmed = text.trim();
       if (trimmed.length === 0) return;
       setSending(true);
       setError(null);
       try {
-        await hub.sendMessage(roomId, trimmed, null);
+        await hub.sendMessage(roomId, trimmed, replyToMessageId);
         // MessageReceived callback appends the message (including to the sender's own UI).
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Send failed.');
@@ -168,6 +190,38 @@ export function useRoomMessages(roomId: string | undefined): UseRoomMessagesResu
       }
     },
     [hub, roomId],
+  );
+
+  const editMessage = useCallback(
+    async (messageId: string, newText: string) => {
+      if (!roomId) return;
+      const trimmed = newText.trim();
+      if (trimmed.length === 0) return;
+      setError(null);
+      try {
+        await api.patch(`/api/rooms/${roomId}/messages/${messageId}`, { text: trimmed });
+        // MessageEdited broadcast applies the new text. We don't mutate locally here.
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Edit failed.');
+        throw err;
+      }
+    },
+    [roomId],
+  );
+
+  const deleteMessage = useCallback(
+    async (messageId: string) => {
+      if (!roomId) return;
+      setError(null);
+      try {
+        await api.delete(`/api/rooms/${roomId}/messages/${messageId}`);
+        // MessageDeleted broadcast flips the row to the tombstone placeholder.
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Delete failed.');
+        throw err;
+      }
+    },
+    [roomId],
   );
 
   const loadOlder = useCallback(async () => {
@@ -189,5 +243,5 @@ export function useRoomMessages(roomId: string | undefined): UseRoomMessagesResu
     }
   }, [roomId, loading, messages]);
 
-  return { messages, hasMoreHistory, loading, sending, error, send, loadOlder };
+  return { messages, hasMoreHistory, loading, sending, error, send, editMessage, deleteMessage, loadOlder };
 }

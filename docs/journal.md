@@ -1327,3 +1327,21 @@ No running total. One file-read cluster, one short exploration, seven edits, two
 Story 2.1 — **Friend requests + accept/remove**. First new entity since Story 1.1 (Friendship). Design-heavy, worth careful plan-mode. The presence work from 1.15 / 1.16 + this snapshot fix drops in for free once the contact list UI exists: same `PresenceBadge`, same `usePresence`, same snapshot-on-mount pattern, just pointed at a different REST source.
 
 ---
+
+### [2026-04-19 19:59 ART] Note — Meta
+
+**Singularity moment — reached? Well… marinating, untangling, let's call it yes.** Calling the MVP bar crossed. Not the whole task — there's still moderation, attachments, admin surface, and polish — but the core "is this a chat application" bar is now green.
+
+Quick inventory of what's live end-to-end, two-browser-verified:
+
+- **Complete auth.** Register, login, HttpOnly cookie session auth, password change, multi-session support with per-session logout, proper session lifecycle.
+- **Rooms.** Create / public vs private / catalog with search / join and leave / member list with role display (Owner / Admin / Member).
+- **Real-time messaging.** SignalR WebSocket transport on the hot path; in-memory `Channel<T>` between receive and persist; `BackgroundService` consumer draining to Postgres on the cold path; per-room watermarks for history integrity; cursor-based pagination for infinite scroll; reply-to modeling in place (UI surfaces it in Story 2.4).
+- **Multi-tab presence.** Client heartbeat emitter, throttled and foreground-gated; server-authoritative AFK inference via `PeriodicTimer`; members list renders initial snapshot from `/members` (with status field) and layers live `PresenceChanged` deltas on top; broadcast scope correctly narrowed to users who share at least one room with the transitioning user.
+- **Solid infrastructure.** Golden rule holds — `git clone && docker compose up` brings the system up cleanly. Concurrency-hardened tests (20-task parallel DB-paused exercises for the watermark path). Persistent Serilog sinks (console + file). CLAUDE.md + command chain + rich journal, all of it checked in. 119 tests green.
+
+Stories remaining span friends/contacts, 1-to-1 DMs (which are "rooms of 2" and reuse 90% of what's here), attachments, moderation, admin. Not nothing, but the hardest architectural work — the one-process topology with queue + hub + watermarks + presence reconciliation — is behind me and validated under concurrent load.
+
+Stepping back from the counter: the part that surprises me most is the shape of the work still ahead. It's not "solve more hard problems"; it's "instance the existing patterns onto new entities". That's the signal that the architecture carried its weight.
+
+---

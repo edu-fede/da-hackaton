@@ -210,4 +210,273 @@ public class MessageEndpointsTests(ApiFactory factory) : IClassFixture<ApiFactor
         body.EnumerateArray().Count().Should().Be(50);
         sw.ElapsedMilliseconds.Should().BeLessThan(200, "NFR-6 — cursor pagination should stay snappy at 10K messages");
     }
+
+    // ----- PATCH /api/rooms/{id}/messages/{messageId} -----
+
+    private async Task<Guid> SeedOneMessageAsync(Guid roomId, Guid senderId, int sequenceInRoom, CancellationToken ct)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var id = Guid.NewGuid();
+        db.Messages.Add(new Message
+        {
+            Id = id,
+            RoomId = roomId,
+            SenderId = senderId,
+            Text = "original text",
+            CreatedAt = DateTimeOffset.UtcNow,
+            SequenceInRoom = sequenceInRoom,
+        });
+        await db.SaveChangesAsync(ct);
+        return id;
+    }
+
+    [Fact]
+    public async Task Edit_message_by_author_returns_200_and_sets_EditedAt()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var (client, userId) = await AuthenticatedClientAsync(ct);
+        var roomId = await CreateRoomAsync(client, ct);
+        var messageId = await SeedOneMessageAsync(roomId, userId, 1, ct);
+
+        var response = await client.PatchAsJsonAsync(
+            $"/api/rooms/{roomId}/messages/{messageId}",
+            new { text = "edited text" },
+            ct);
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>(ct);
+        body.GetProperty("text").GetString().Should().Be("edited text");
+        body.GetProperty("editedAt").ValueKind.Should().NotBe(JsonValueKind.Null);
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var persisted = await db.Messages.SingleAsync(m => m.Id == messageId, ct);
+        persisted.Text.Should().Be("edited text");
+        persisted.EditedAt.Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task Edit_message_by_non_author_returns_403()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var (owner, ownerId) = await AuthenticatedClientAsync(ct);
+        var (other, otherId) = await AuthenticatedClientAsync(ct);
+        var roomId = await CreateRoomAsync(owner, ct);
+        (await other.PostAsync($"/api/rooms/{roomId}/join", null, ct)).StatusCode.Should().Be(HttpStatusCode.NoContent);
+        var messageId = await SeedOneMessageAsync(roomId, ownerId, 1, ct);
+
+        var response = await other.PatchAsJsonAsync(
+            $"/api/rooms/{roomId}/messages/{messageId}",
+            new { text = "hijack" },
+            ct);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        _ = otherId; // silence unused
+    }
+
+    [Fact]
+    public async Task Edit_message_by_non_member_returns_403()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var (owner, ownerId) = await AuthenticatedClientAsync(ct);
+        var (stranger, _) = await AuthenticatedClientAsync(ct);
+        var roomId = await CreateRoomAsync(owner, ct);
+        var messageId = await SeedOneMessageAsync(roomId, ownerId, 1, ct);
+
+        var response = await stranger.PatchAsJsonAsync(
+            $"/api/rooms/{roomId}/messages/{messageId}",
+            new { text = "hijack" },
+            ct);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+    }
+
+    [Fact]
+    public async Task Edit_already_deleted_message_returns_410()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var (client, userId) = await AuthenticatedClientAsync(ct);
+        var roomId = await CreateRoomAsync(client, ct);
+        var messageId = await SeedOneMessageAsync(roomId, userId, 1, ct);
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var m = await db.Messages.SingleAsync(m => m.Id == messageId, ct);
+            m.DeletedAt = DateTimeOffset.UtcNow;
+            await db.SaveChangesAsync(ct);
+        }
+
+        var response = await client.PatchAsJsonAsync(
+            $"/api/rooms/{roomId}/messages/{messageId}",
+            new { text = "too late" },
+            ct);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Gone);
+    }
+
+    [Fact]
+    public async Task Edit_empty_text_returns_400()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var (client, userId) = await AuthenticatedClientAsync(ct);
+        var roomId = await CreateRoomAsync(client, ct);
+        var messageId = await SeedOneMessageAsync(roomId, userId, 1, ct);
+
+        var response = await client.PatchAsJsonAsync(
+            $"/api/rooms/{roomId}/messages/{messageId}",
+            new { text = "" },
+            ct);
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    [Fact]
+    public async Task Edit_message_text_with_only_whitespace_returns_400()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var (client, userId) = await AuthenticatedClientAsync(ct);
+        var roomId = await CreateRoomAsync(client, ct);
+        var messageId = await SeedOneMessageAsync(roomId, userId, 1, ct);
+
+        var response = await client.PatchAsJsonAsync(
+            $"/api/rooms/{roomId}/messages/{messageId}",
+            new { text = "   \t\n  " },
+            ct);
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    [Fact]
+    public async Task Edit_text_over_3KB_returns_400()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var (client, userId) = await AuthenticatedClientAsync(ct);
+        var roomId = await CreateRoomAsync(client, ct);
+        var messageId = await SeedOneMessageAsync(roomId, userId, 1, ct);
+        var tooLong = new string('x', 4 * 1024);
+
+        var response = await client.PatchAsJsonAsync(
+            $"/api/rooms/{roomId}/messages/{messageId}",
+            new { text = tooLong },
+            ct);
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    [Fact]
+    public async Task Edit_nonexistent_message_returns_404()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var (client, _) = await AuthenticatedClientAsync(ct);
+        var roomId = await CreateRoomAsync(client, ct);
+
+        var response = await client.PatchAsJsonAsync(
+            $"/api/rooms/{roomId}/messages/{Guid.NewGuid()}",
+            new { text = "nope" },
+            ct);
+
+        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    // ----- DELETE /api/rooms/{id}/messages/{messageId} -----
+
+    [Fact]
+    public async Task Delete_message_by_author_returns_204_and_sets_DeletedAt()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var (client, userId) = await AuthenticatedClientAsync(ct);
+        var roomId = await CreateRoomAsync(client, ct);
+        var messageId = await SeedOneMessageAsync(roomId, userId, 1, ct);
+
+        var response = await client.DeleteAsync($"/api/rooms/{roomId}/messages/{messageId}", ct);
+
+        response.StatusCode.Should().Be(HttpStatusCode.NoContent);
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var persisted = await db.Messages.SingleAsync(m => m.Id == messageId, ct);
+        persisted.DeletedAt.Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task Delete_message_by_admin_returns_204()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var (owner, _) = await AuthenticatedClientAsync(ct);
+        var (author, authorId) = await AuthenticatedClientAsync(ct);
+        var (admin, adminId) = await AuthenticatedClientAsync(ct);
+        var roomId = await CreateRoomAsync(owner, ct);
+        (await author.PostAsync($"/api/rooms/{roomId}/join", null, ct)).StatusCode.Should().Be(HttpStatusCode.NoContent);
+        (await admin.PostAsync($"/api/rooms/{roomId}/join", null, ct)).StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var m = await db.RoomMembers.SingleAsync(x => x.RoomId == roomId && x.UserId == adminId, ct);
+            m.Role = RoomRole.Admin;
+            await db.SaveChangesAsync(ct);
+        }
+
+        var messageId = await SeedOneMessageAsync(roomId, authorId, 1, ct);
+
+        var response = await admin.DeleteAsync($"/api/rooms/{roomId}/messages/{messageId}", ct);
+
+        response.StatusCode.Should().Be(HttpStatusCode.NoContent);
+    }
+
+    [Fact]
+    public async Task Delete_message_by_owner_returns_204()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var (owner, _) = await AuthenticatedClientAsync(ct);
+        var (author, authorId) = await AuthenticatedClientAsync(ct);
+        var roomId = await CreateRoomAsync(owner, ct);
+        (await author.PostAsync($"/api/rooms/{roomId}/join", null, ct)).StatusCode.Should().Be(HttpStatusCode.NoContent);
+        var messageId = await SeedOneMessageAsync(roomId, authorId, 1, ct);
+
+        var response = await owner.DeleteAsync($"/api/rooms/{roomId}/messages/{messageId}", ct);
+
+        response.StatusCode.Should().Be(HttpStatusCode.NoContent);
+    }
+
+    [Fact]
+    public async Task Delete_message_by_other_member_returns_403()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var (owner, ownerId) = await AuthenticatedClientAsync(ct);
+        var (other, _) = await AuthenticatedClientAsync(ct);
+        var roomId = await CreateRoomAsync(owner, ct);
+        (await other.PostAsync($"/api/rooms/{roomId}/join", null, ct)).StatusCode.Should().Be(HttpStatusCode.NoContent);
+        var messageId = await SeedOneMessageAsync(roomId, ownerId, 1, ct);
+
+        var response = await other.DeleteAsync($"/api/rooms/{roomId}/messages/{messageId}", ct);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+    }
+
+    [Fact]
+    public async Task Delete_already_deleted_message_is_idempotent_204()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var (client, userId) = await AuthenticatedClientAsync(ct);
+        var roomId = await CreateRoomAsync(client, ct);
+        var messageId = await SeedOneMessageAsync(roomId, userId, 1, ct);
+
+        (await client.DeleteAsync($"/api/rooms/{roomId}/messages/{messageId}", ct)).StatusCode.Should().Be(HttpStatusCode.NoContent);
+        var second = await client.DeleteAsync($"/api/rooms/{roomId}/messages/{messageId}", ct);
+
+        second.StatusCode.Should().Be(HttpStatusCode.NoContent);
+    }
+
+    [Fact]
+    public async Task Delete_nonexistent_message_returns_404()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var (client, _) = await AuthenticatedClientAsync(ct);
+        var roomId = await CreateRoomAsync(client, ct);
+
+        var response = await client.DeleteAsync($"/api/rooms/{roomId}/messages/{Guid.NewGuid()}", ct);
+
+        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
 }

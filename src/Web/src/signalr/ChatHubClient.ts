@@ -21,8 +21,23 @@ export type PresenceBroadcastPayload = {
   at: string;
 };
 
+export type MessageEditedBroadcast = {
+  id: string;
+  roomId: string;
+  text: string;
+  editedAt: string;
+};
+
+export type MessageDeletedBroadcast = {
+  id: string;
+  roomId: string;
+  deletedAt: string;
+};
+
 type MessageHandler = (message: MessageBroadcast) => void;
 type PresenceHandler = (payload: PresenceBroadcastPayload) => void;
+type MessageEditedHandler = (payload: MessageEditedBroadcast) => void;
+type MessageDeletedHandler = (payload: MessageDeletedBroadcast) => void;
 
 /**
  * Typed wrapper around the SignalR HubConnection. Cookie-authenticated via `withCredentials`,
@@ -33,6 +48,8 @@ export class ChatHubClient {
   private readonly handlers = new Set<MessageHandler>();
   private readonly reconnectHandlers = new Set<() => void>();
   private readonly presenceHandlers = new Set<PresenceHandler>();
+  private readonly editHandlers = new Set<MessageEditedHandler>();
+  private readonly deleteHandlers = new Set<MessageDeletedHandler>();
   private startPromise: Promise<void> | null = null;
 
   constructor() {
@@ -50,6 +67,14 @@ export class ChatHubClient {
 
     this.connection.on('PresenceChanged', (payload: PresenceBroadcastPayload) => {
       for (const h of this.presenceHandlers) h(payload);
+    });
+
+    this.connection.on('MessageEdited', (payload: MessageEditedBroadcast) => {
+      for (const h of this.editHandlers) h(payload);
+    });
+
+    this.connection.on('MessageDeleted', (payload: MessageDeletedBroadcast) => {
+      for (const h of this.deleteHandlers) h(payload);
     });
 
     this.connection.onreconnected(() => {
@@ -115,6 +140,16 @@ export class ChatHubClient {
   onPresenceChanged(handler: PresenceHandler): () => void {
     this.presenceHandlers.add(handler);
     return () => this.presenceHandlers.delete(handler);
+  }
+
+  onMessageEdited(handler: MessageEditedHandler): () => void {
+    this.editHandlers.add(handler);
+    return () => this.editHandlers.delete(handler);
+  }
+
+  onMessageDeleted(handler: MessageDeletedHandler): () => void {
+    this.deleteHandlers.add(handler);
+    return () => this.deleteHandlers.delete(handler);
   }
 
   onReconnected(handler: () => void): () => void {
