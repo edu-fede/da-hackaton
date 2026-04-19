@@ -1,6 +1,8 @@
 using System.Security.Claims;
+using System.Text.Json.Serialization;
 using Hackaton.Api.Auth;
 using Hackaton.Api.Data;
+using Hackaton.Api.Rooms;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
@@ -28,6 +30,10 @@ builder.Services.AddDbContext<AppDbContext>((sp, options) =>
 
 builder.Services.AddSingleton<IPasswordHasher<User>, PasswordHasher<User>>();
 builder.Services.AddProblemDetails();
+builder.Services.ConfigureHttpJsonOptions(options =>
+{
+    options.SerializerOptions.Converters.Add(new JsonStringEnumConverter());
+});
 
 builder.Services
     .AddAuthentication(SessionAuthenticationDefaults.SchemeName)
@@ -63,6 +69,7 @@ app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapAuthEndpoints();
+app.MapRoomEndpoints();
 
 app.MapGet("/api/me", (ClaimsPrincipal user) => Results.Ok(new
 {

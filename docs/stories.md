@@ -198,16 +198,18 @@ As the backend, I need the room model so room features (creation, listing, membe
 As an authenticated user, I want to create rooms, discover public ones, and join/leave them so I can participate in conversations (FR-22, FR-24, FR-25, FR-27).
 
 **Acceptance Criteria:**
-- [ ] Create room: creator becomes `Owner`; room name uniqueness enforced (409 on conflict).
-- [ ] List catalog: returns public rooms with `{name, description, memberCount}`; supports `?q=` substring search.
-- [ ] Join: inserts `RoomMember(Role=Member)`; rejects if user is in the room's ban list (`403`).
-- [ ] Leave: removes membership; owner leave request returns `400` (owner must delete).
-- [ ] Integration tests for each endpoint.
+- [x] Create room: creator becomes `Owner`; room name uniqueness enforced (409 on conflict).
+- [x] List catalog: returns public rooms with `{name, description, memberCount}`; supports `?q=` substring search.
+- [x] Join: inserts `RoomMember(Role=Member)`; rejects if user is in the room's ban list (`403`).
+- [x] Leave: removes membership; owner leave request returns `400` (owner must delete).
+- [x] Integration tests for each endpoint.
 
 **Priority:** High
 **Labels:** api, testing
 **Story Points:** 3
 **Traces to:** FR-22, FR-23, FR-24, FR-25, FR-27, FR-32
+
+**Status:** Done (commit pending)
 
 ---
 
