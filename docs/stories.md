@@ -332,16 +332,18 @@ As a reconnecting client, I want to fetch only the messages I missed per room, a
 As a user, I want to see messages in real time and scroll back through history smoothly (FR-41, FR-51, NFR-6).
 
 **Acceptance Criteria:**
-- [ ] `@microsoft/signalr` client connects on login, reconnects with exponential backoff.
-- [ ] Receives `MessageReceived`, prepends/appends to the current room's list.
-- [ ] Infinite scroll upward: when scroll reaches top, fetches next page via REST history endpoint.
-- [ ] Auto-scroll to bottom only when the user is within N px of bottom; respects read-older-history state.
-- [ ] Watermark persisted to `localStorage`; on reconnect, calls resync endpoint.
+- [x] `@microsoft/signalr` client connects on login, reconnects with exponential backoff.
+- [x] Receives `MessageReceived`, prepends/appends to the current room's list.
+- [x] Infinite scroll upward: when scroll reaches top, fetches next page via REST history endpoint.
+- [x] Auto-scroll to bottom only when the user is within N px of bottom; respects read-older-history state.
+- [x] Watermark persisted to `localStorage`; on reconnect, calls resync endpoint.
 
 **Priority:** High
 **Labels:** web, realtime, testing
 **Story Points:** 5
 **Traces to:** FR-41, FR-42, FR-51, NFR-6 — **⚠ split candidate:** `a) SignalR wiring + render`, `b) infinite scroll + watermark resync`.
+
+**Status:** Done (commit pending)
 
 ---
 
