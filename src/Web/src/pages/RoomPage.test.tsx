@@ -11,8 +11,8 @@ type MessageReceivedHandler = (m: MessageBroadcast) => void;
 class FakeHub {
   private handlers: MessageReceivedHandler[] = [];
   sendMessage = vi.fn(async (_roomId: string, _text: string) => undefined);
-  joinRoom = vi.fn(async () => undefined);
-  leaveRoom = vi.fn(async () => undefined);
+  joinRoom = vi.fn(async (_roomId: string) => undefined);
+  leaveRoom = vi.fn(async (_roomId: string) => undefined);
   start = vi.fn(async () => undefined);
   stop = vi.fn(async () => undefined);
   onMessageReceived = vi.fn((h: MessageReceivedHandler) => {

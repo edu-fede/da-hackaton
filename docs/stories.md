@@ -355,16 +355,17 @@ As a user, I want to see messages in real time and scroll back through history s
 As a contact, I want to see online/AFK/offline indicators reflecting real activity (FR-12, FR-13, FR-14, NFR-5, Architecture Constraint §2).
 
 **Acceptance Criteria:**
-- [ ] `OnConnectedAsync` adds the connection to a per-user entry keyed by `userId`, stamps `lastHeartbeat = now`.
-- [ ] `Heartbeat()` hub method refreshes `lastHeartbeat` for that connection.
-- [ ] `OnDisconnectedAsync` removes the connection; the user is `offline` only when all connections are gone.
-- [ ] A `PeriodicTimer` (e.g., every 10s) marks users `AFK` whose ALL connections have `now - lastHeartbeat > 60s`.
-- [ ] State transitions broadcast `PresenceChanged` to affected contacts/rooms; no DB writes.
+- [x] `OnConnectedAsync` adds the connection to a per-user entry keyed by `userId`, stamps `lastHeartbeat = now`.
+- [x] `Heartbeat()` hub method refreshes `lastHeartbeat` for that connection.
+- [x] `OnDisconnectedAsync` removes the connection; the user is `offline` only when all connections are gone.
+- [x] A `PeriodicTimer` (e.g., every 10s) marks users `AFK` whose ALL connections have `now - lastHeartbeat > 60s`.
+- [x] State transitions broadcast `PresenceChanged` to affected contacts/rooms; no DB writes.
 
 **Priority:** High
 **Labels:** api, realtime, testing
 **Story Points:** 5
 **Traces to:** FR-12, FR-13, FR-14, NFR-5 — **⚠ split candidate:** `a) hub + heartbeat + per-connection tracking`, `b) PeriodicTimer + AFK rule + broadcast fan-out`.
+**Status:** Done (commit pending). Friends fan-out deferred to Story 2.1 (no Friendship entity yet); presence broadcasts currently target shared-room peers only.
 
 ---
 

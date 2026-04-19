@@ -6,6 +6,7 @@ using System.Threading.Channels;
 using FluentAssertions;
 using Hackaton.Api.Data;
 using Hackaton.Api.Messages;
+using Hackaton.Api.Presence;
 using Hackaton.Api.Tests.Fixtures;
 using Microsoft.AspNetCore.Http.Connections;
 using Microsoft.AspNetCore.Http.Connections.Client;
@@ -259,6 +260,75 @@ public class ChatHubTests(ApiFactory factory) : IClassFixture<ApiFactory>
 
         var act = async () => await anon.StartAsync(ct);
         await act.Should().ThrowAsync<Exception>();
+    }
+
+    [Fact]
+    public async Task OnConnect_broadcasts_PresenceChanged_Online_to_room_peers()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var (ownerHttp, ownerCookie, _) = await AuthenticatedClientAsync(ct);
+        var (_, peerCookie, peerId) = await AuthenticatedClientAsync(ct);
+        var roomId = await CreateRoomAndAddMemberAsync(ownerHttp, peerId, ct);
+
+        await using var owner = BuildHubConnection(ownerCookie);
+        var received = new TaskCompletionSource<PresenceBroadcast>();
+        owner.On<PresenceBroadcast>("PresenceChanged", p =>
+        {
+            if (p.UserId == peerId && p.Status == "Online")
+            {
+                received.TrySetResult(p);
+            }
+        });
+        await owner.StartAsync(ct);
+
+        await using var peer = BuildHubConnection(peerCookie);
+        await peer.StartAsync(ct);
+
+        var payload = await received.Task.WaitAsync(TimeSpan.FromSeconds(5), ct);
+        payload.UserId.Should().Be(peerId);
+        payload.Status.Should().Be("Online");
+    }
+
+    [Fact]
+    public async Task OnDisconnect_broadcasts_PresenceChanged_Offline_when_last_connection_closes()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var (ownerHttp, ownerCookie, _) = await AuthenticatedClientAsync(ct);
+        var (_, peerCookie, peerId) = await AuthenticatedClientAsync(ct);
+        var roomId = await CreateRoomAndAddMemberAsync(ownerHttp, peerId, ct);
+
+        await using var owner = BuildHubConnection(ownerCookie);
+        var offlineReceived = new TaskCompletionSource<PresenceBroadcast>();
+        owner.On<PresenceBroadcast>("PresenceChanged", p =>
+        {
+            if (p.UserId == peerId && p.Status == "Offline")
+            {
+                offlineReceived.TrySetResult(p);
+            }
+        });
+        await owner.StartAsync(ct);
+
+        var peer = BuildHubConnection(peerCookie);
+        await peer.StartAsync(ct);
+        await peer.StopAsync(ct);
+        await peer.DisposeAsync();
+
+        var payload = await offlineReceived.Task.WaitAsync(TimeSpan.FromSeconds(5), ct);
+        payload.UserId.Should().Be(peerId);
+        payload.Status.Should().Be("Offline");
+    }
+
+    [Fact]
+    public async Task Heartbeat_invocation_on_connected_user_does_not_throw()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var (_, cookie, _) = await AuthenticatedClientAsync(ct);
+
+        await using var connection = BuildHubConnection(cookie);
+        await connection.StartAsync(ct);
+
+        var act = async () => await connection.InvokeAsync("Heartbeat", ct);
+        await act.Should().NotThrowAsync();
     }
 
     [Fact]

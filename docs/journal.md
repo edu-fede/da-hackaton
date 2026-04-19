@@ -976,3 +976,72 @@ Two lessons I want to bank. First, **DI via optional props beats module-mocking 
 - **Story 1.15 — Presence tracking (Hub state + heartbeats + AFK timer).** The server-side half of presence. `ConcurrentDictionary<userId, PresenceInfo>` in the `ChatHub` populated on `OnConnectedAsync` and removed on `OnDisconnectedAsync`. A new `Heartbeat()` hub method refreshes `lastHeartbeat`. A `PeriodicTimer` (every 10s) marks users `AFK` whose ALL connections have `lastHeartbeat > 60s` ago. State transitions broadcast `PresenceChanged` to affected peers. Per CLAUDE.md §2 this is server-authoritative, NEVER persisted, and per journal 21:48 the AFK inference is always server-side (browsers hibernate tabs, clients can't reliably self-report AFK). Points: 5 — also a split candidate. **Pre-decision to lock**: the broadcast scope. Stories.md Decision §8 already picked "lazy push to relevant peers only" — broadcast only to users who share at least one room with the changed user AND are currently connected. The 1.15 plan needs to concretely say HOW "share at least one room" is computed at broadcast time — a DB query every transition would violate the §2 "no DB for presence" rule; a reverse index in memory (`Map<userId, Set<roomId>>` + `Map<roomId, Set<userId>>`) is the obvious structure but adds bookkeeping on every connect/disconnect. Worth pre-deciding at plan time whether to maintain the reverse index or do the DB lookup once-per-transition (still bounded, still memory-friendly at 300 users). Also: **Story 1.15 is a split candidate** in stories.md — `a) hub + heartbeat + per-connection tracking` and `b) PeriodicTimer + AFK rule + broadcast fan-out`. I'd argue NOT to split again (same reason as 1.14), but surface the option in plan mode.
 
 ---
+
+### [2026-04-19 10:00 ART] Note — Meta
+
+Sunday 10 a.m., relatively fresh head after a few hours away from the first real bug I've hit on this project. A few observations worth banking before I keep digging into it — not conclusions, just things I noticed about *how* I've been working.
+
+**On the QA surface.** It was called "the first" bug only because it happened to be obvious in an end-to-end smoke. That's what I'm mostly doing right now: driving the app in the browser and trusting the generated test suite (which, credit where due, is genuinely well built and has caught a lot of things before they reached me) to cover everything else. I don't know what a more dedicated QA pass would have surfaced by now — probably more issues. Smoke feels clean apart from this one, but "feels clean" is not the same as "is clean." Worth keeping in mind that the confidence I have in the suite may be a little over-calibrated: the tests cover what Claude thought to test, and the blind spots are by definition invisible from inside that loop.
+
+**On the role reversal.** While chasing the root cause of the bug a few hours ago, I noticed I'd slipped into a mode where I was blindly copy-pasting instructions from claude.ai back into the terminal without really reading them. "Please run `docker compose logs -f api` for me" — I didn't even glance at the working directory, just pasted and hit enter. Obviously I was in the wrong directory. Fail. And then it asked me to reproduce specific scenarios and send back logs, which I duly did. At some point it stopped feeling like I was directing the agent and started feeling like I was a user collecting evidence for an L2 support team — he (and yes, at some point I started using "he") was running the investigation and I was the hands. Not good or bad, just an observation. Probably mostly on me — I drifted into it without noticing. But worth flagging to myself so I can decide whether that's the relationship I actually want, or whether I should be asking for the reasoning behind each step before I run it.
+
+---
+
+## [2026-04-19 12:55 ART] — Story 1.15: Presence tracking (Hub state + heartbeats + AFK timer)
+
+**Story:** 1.15 — Presence tracking (Hub state + heartbeats + AFK timer)
+**Commit:** see git log — the commit that carries this journal entry.
+
+### What was built
+Server-side presence. A singleton `PresenceTracker` holds `ConcurrentDictionary<Guid, PresenceInfo>`; `PresenceInfo` carries `ConcurrentDictionary<connectionId, lastHeartbeat>`, a `HashSet<Guid> Rooms`, and the current `PresenceStatus` (`Online` / `AFK` / `Offline`). `ChatHub.OnConnectedAsync` tracks the connection and fans out a `PresenceChanged { Online }` to shared-room groups on first-connection-per-user. `OnDisconnectedAsync` is new — on last-connection-gone it removes the user entry and fans out `Offline`. A new `Heartbeat()` hub method refreshes per-connection timestamps and flips `AFK → Online` when a previously-idle user becomes active again. A `PresenceSweepService : BackgroundService` runs a `PeriodicTimer(10s)` loop, calls `tracker.SweepAfk(now, 60s)`, and fans out `AFK` transitions. The tracker never touches the DB; presence is pure in-memory state, CLAUDE.md §2.
+
+### ADLC traceability
+Satisfies FR-12 (online indicator), FR-13 (AFK after 1 min), FR-14 (presence driven by real activity), NFR-5 (<2s presence updates — transitions fan out immediately; sweep grain is 10s worst-case for AFK detection within the 60s rule). All 5 acceptance criteria ticked. Honored Decision §8 (lazy push to peers sharing a room) — SignalR room groups do the "only connected peers receive it" filtering for free, so no extra code to check "is the peer connected?". Split-candidate flag on the story was ignored deliberately: the tracker + heartbeat + sweep + fan-out share enough infra (DI, tests, broadcast helper) that splitting would have duplicated scaffolding. **Friends fan-out deferred to Story 2.1** because no Friendship entity exists yet — Decision §8 part "b" is a no-op until then. Documented in the Status line.
+
+### Non-obvious decisions
+
+- **Decision:** `PresenceInfo.Rooms` is populated eagerly in `OnConnectedAsync` from the DB, and then kept in sync via `tracker.AddRoom` / `tracker.RemoveRoom` hooks in `JoinRoom` / `LeaveRoom`.
+  **Alternatives considered:** (a) re-query the DB on every fan-out to find the user's rooms, (b) maintain a reverse index `Map<roomId, Set<userId>>` in addition.
+  **Why:** (a) violates the §2 "presence is RAM-only" rule, and more importantly puts a DB query in the disconnect path — presence events are the wrong moment for a query. (b) is what the planning-morning journal note forecast, but the forward index alone was enough: SignalR groups already hold the "who's in the room right now" data, so I don't need a reverse index to find recipients — I just send to `room:{roomId}` and let SignalR dispatch. The forward index only needs to know "which rooms does THIS transitioning user belong to", which is O(rooms-per-user) to iterate.
+
+- **Decision:** Status vocabulary is `"Online"` / `"AFK"` / `"Offline"` (strings on the wire, `PresenceStatus.ToString()` at the boundary).
+  **Alternatives considered:** pass the enum as a number; pass lowercase strings.
+  **Why:** capitalized `"AFK"` matches how the task description writes it (§2.2.1) and gives the frontend a stable contract without a separate `JsonStringEnumConverter` dance on the SignalR protocol. `ToString()` on the enum happens to produce the exact right shapes because C# preserves the member names — `PresenceStatus.AFK` → `"AFK"`.
+
+- **Decision:** The sweep service broadcasts via `IHubContext<ChatHub>`; the hub methods broadcast via their own `Clients` property. Both go through a shared `PresenceBroadcaster.FanOutAsync` helper with two overloads (one taking `IHubContext<ChatHub>`, one taking `IHubCallerClients`).
+  **Alternatives considered:** always broadcast via `IHubContext<ChatHub>` even from inside the Hub.
+  **Why:** using `Clients` inside the Hub is the idiomatic path and avoids an unnecessary indirection. The overload keeps the "status+at+rooms" serialization logic in exactly one place.
+
+- **Decision:** Time is injected as a `DateTimeOffset now` parameter into every tracker mutation instead of using `TimeProvider` or `DateTimeOffset.UtcNow` inside the tracker.
+  **Alternatives considered:** `TimeProvider` + `FakeTimeProvider` for tests; direct `UtcNow`.
+  **Why:** plain parameter is the smallest possible API, makes tests fully deterministic without a framework dependency, and the hub/sweep caller is already the right layer to decide "what is now". `TimeProvider` would have been ceremony for no gain.
+
+### Friction and blockers
+
+- **The deployable check found a TypeScript regression I shipped in the previous commit.** `npm run build` inside the web Dockerfile runs `tsc --noEmit` over the whole project including test files. In commit `86f5418` (the /join idempotency fix from this morning), I'd added a wrapper spy around `fakeHub.joinRoom` that passed `roomId` through, but the FakeHub class declared `joinRoom = vi.fn(async () => undefined)` — zero parameters. Vitest happily runs the test (it doesn't typecheck), so the local `npm test -- --run` came back green, and I committed. Docker rebuild today caught it. Fix was trivial (one-line signature update to `async (_roomId: string) => undefined`). Lesson: **`npm test` and `npm run build` exercise different compilers**; relying only on the test runner means typecheck errors in test files slip through until the next docker rebuild. Should probably run `npm run build` as part of the pre-commit routine for frontend changes, not just `npm test`. Noting for the workflow.
+
+- **No real friction on the presence implementation itself.** The TDD loop was tight: wrote 18 failing-to-compile tests, implemented the tracker once, all 18 passed on the first real run. That's unusually smooth and probably means the design-first planning on this one was worth it. The "split candidate" warning in the story turned out to be a false alarm — the pieces are genuinely coupled (a tracker with no sweep is dead weight; a sweep with no fan-out helper is untested).
+
+- **Hub integration tests — one subtle thing.** The `OnDisconnect → Offline` test had to explicitly `await peer.StopAsync` AND `DisposeAsync`; just letting the `using` block dispose the connection wasn't reliably surfacing the Offline broadcast before the owner connection was torn down at end-of-test. Explicit shutdown makes the sequencing clear.
+
+### Verification evidence
+- Tests: 104 passing (94 backend — including 18 new `PresenceTrackerTests` and 3 new `ChatHubTests` for presence — + 10 frontend).
+- Build: ✅ `dotnet build` + `npm run build` both clean.
+- `docker compose up -d --build`: ✅ all three containers recreated; `hackaton-api` started.
+- End-to-end check: `GET http://localhost:8080/health` → `200 {"status":"healthy","database":"up",...}`. `docker logs hackaton-api | grep Presence` shows `PresenceSweepService started; sweep every 10s, AFK after 60s.` — the hosted service is live. Hub-level presence fan-out exercised by the new `OnConnect_broadcasts_PresenceChanged_Online_to_room_peers` and `OnDisconnect_broadcasts_PresenceChanged_Offline_when_last_connection_closes` integration tests, which run a real SignalR client against the TestServer. The AFK `Online → AFK` transition is NOT exercised end-to-end (would require a 60s+ wait or a TimeProvider seam in the hosted service) — it's covered exhaustively at the unit level on `PresenceTracker.SweepAfk`.
+
+### Reflection
+Two things worth remembering. First: when I planned this I was worried about the "broadcast scope" problem — how does the server know which peers should receive a presence update without a DB query every time? The morning journal entry even flagged "reverse index" as a possible structure. The actual answer was much simpler: SignalR room groups already solve it. The tracker just needs to say "here are the rooms affected" and SignalR does the rest. Anywhere you find yourself inventing an index that duplicates data the framework already has, stop and check. Second: the "split candidate" warning in stories.md was noise here, same as on 1.14. 5-point stories with heavy shared scaffolding should probably be one commit unless there's a real hand-off point (a contract freeze, a blocking dependency). I'll keep being skeptical of those warnings going forward.
+
+### Time
+- **Agent wall clock:** ~18 min from `/add-feature 1.15` plan-approval to journal write. One docker rebuild round-trip inside that window (the tsc regression).
+- **Equivalent human work:** ~3–4 hours end-to-end for a senior .NET + React dev. Breakdown: ~30 min design (thread-safety of the tracker, picking between reverse-index vs single-index, choosing the time-injection seam), ~45 min scaffolding (new folder, DI wiring, `BackgroundService` skeleton, broadcast helper), ~60 min implementation (tracker + sweep + hub hooks), ~45 min tests (18 unit + 3 integration; the SignalR integration harness specifically is not quick to get right), ~15 min verification + doc. The concurrency invariants alone — "user in dict iff has connections; status ∈ {Online, AFK} while in dict; Offline = absence" — usually eat an hour of careful review on their own.
+- **(c) developer-time invested:** ~5 min. Read the plan, replied "Go with changes: (1) Friends fan-out deferred, (2) Status vocab AFK all-caps, (3) Docker rebuild mandatory." That's it. No manual code review between plan-approval and the commit-ready state. Which is either a sign that the discipline is holding or a sign I'm drifting back into the role-reversal the 10:00 meta-note flagged. Worth watching.
+
+### Cost so far (rough)
+Not tracking token totals this session. Story 1.15 was a single multi-step tool chain without noticeable context pressure — the TDD structure kept scope tight.
+
+### Next
+Story 1.16 — **Web: heartbeat emitter + presence indicators**. This is the client half of presence: a throttled activity listener emits `Heartbeat` every 10–15s while the tab is foregrounded; presence dots render in the sidebar and room member list. Natural follow-on. Prerequisites: the wire contract is now fixed (`PresenceChanged { userId, status, at }`, statuses `"Online" | "AFK" | "Offline"`), and the hub method is named `Heartbeat` — the frontend hub client just needs to add `heartbeat()` and the activity hook. No backend changes expected.
+
+---

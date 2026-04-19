@@ -3,6 +3,7 @@ using System.Text.Json.Serialization;
 using Hackaton.Api.Auth;
 using Hackaton.Api.Data;
 using Hackaton.Api.Messages;
+using Hackaton.Api.Presence;
 using Hackaton.Api.Rooms;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Identity;
@@ -38,6 +39,8 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 
 builder.Services.AddSingleton<MessageQueue>();
 builder.Services.AddHostedService<MessageProcessorService>();
+builder.Services.AddSingleton<PresenceTracker>();
+builder.Services.AddHostedService<PresenceSweepService>();
 builder.Services.AddSignalR();
 
 builder.Services

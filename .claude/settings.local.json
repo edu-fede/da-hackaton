@@ -12,7 +12,15 @@
       "Bash(docker *)",
       "Bash(curl *)",
       "mcp__playwright__browser_network_requests",
-      "mcp__playwright__browser_snapshot"
+      "mcp__playwright__browser_snapshot",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(powershell -Command \"Get-Date -Format 'yyyy-MM-dd HH:mm'\")",
+      "Bash(dotnet *)",
+      "mcp__playwright__browser_fill_form",
+      "mcp__playwright__browser_click",
+      "mcp__playwright__browser_type",
+      "Bash(git *)"
     ]
   },
   "enabledMcpjsonServers": [

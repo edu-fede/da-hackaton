@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using System.Text;
 using Hackaton.Api.Data;
+using Hackaton.Api.Presence;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
@@ -14,7 +15,7 @@ namespace Hackaton.Api.Messages;
 /// persists items asynchronously.
 /// </summary>
 [Authorize]
-public class ChatHub(AppDbContext db, MessageQueue queue) : Hub
+public class ChatHub(AppDbContext db, MessageQueue queue, PresenceTracker presence) : Hub
 {
     private const string JoinedRoomsKey = "JoinedRooms";
     private const int MaxTextBytes = 3 * 1024;
@@ -41,7 +42,38 @@ public class ChatHub(AppDbContext db, MessageQueue queue) : Hub
             joined.Add(roomId);
         }
 
+        var transition = presence.TrackConnection(
+            userId,
+            Context.ConnectionId,
+            memberRoomIds,
+            DateTimeOffset.UtcNow);
+        if (transition is not null)
+        {
+            await PresenceBroadcaster.FanOutAsync(Clients, transition);
+        }
+
         await base.OnConnectedAsync();
+    }
+
+    public override async Task OnDisconnectedAsync(Exception? exception)
+    {
+        var userId = CurrentUserId();
+        var transition = presence.RemoveConnection(userId, Context.ConnectionId, DateTimeOffset.UtcNow);
+        if (transition is not null)
+        {
+            await PresenceBroadcaster.FanOutAsync(Clients, transition);
+        }
+        await base.OnDisconnectedAsync(exception);
+    }
+
+    public async Task Heartbeat()
+    {
+        var userId = CurrentUserId();
+        var transition = presence.Heartbeat(userId, Context.ConnectionId, DateTimeOffset.UtcNow);
+        if (transition is not null)
+        {
+            await PresenceBroadcaster.FanOutAsync(Clients, transition);
+        }
     }
 
     public async Task JoinRoom(Guid roomId)
@@ -62,12 +94,14 @@ public class ChatHub(AppDbContext db, MessageQueue queue) : Hub
         }
 
         JoinedRooms().Add(roomId);
+        presence.AddRoom(userId, roomId);
         await Groups.AddToGroupAsync(Context.ConnectionId, RoomGroup(roomId));
     }
 
     public async Task LeaveRoom(Guid roomId)
     {
         JoinedRooms().Remove(roomId);
+        presence.RemoveRoom(CurrentUserId(), roomId);
         await Groups.RemoveFromGroupAsync(Context.ConnectionId, RoomGroup(roomId));
     }
 
@@ -132,5 +166,5 @@ public class ChatHub(AppDbContext db, MessageQueue queue) : Hub
     private string CurrentUsername() =>
         Context.User!.FindFirstValue(ClaimTypes.Name) ?? string.Empty;
 
-    private static string RoomGroup(Guid roomId) => $"room:{roomId}";
+    public static string RoomGroup(Guid roomId) => $"room:{roomId}";
 }
