@@ -365,7 +365,7 @@ As a contact, I want to see online/AFK/offline indicators reflecting real activi
 **Labels:** api, realtime, testing
 **Story Points:** 5
 **Traces to:** FR-12, FR-13, FR-14, NFR-5 — **⚠ split candidate:** `a) hub + heartbeat + per-connection tracking`, `b) PeriodicTimer + AFK rule + broadcast fan-out`.
-**Status:** Done (commit pending). Friends fan-out deferred to Story 2.1 (no Friendship entity yet); presence broadcasts currently target shared-room peers only.
+**Status:** Done (commit 473221d). Friends fan-out deferred to Story 2.1 (no Friendship entity yet); presence broadcasts currently target shared-room peers only.
 
 ---
 

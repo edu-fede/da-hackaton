@@ -990,7 +990,7 @@ Sunday 10 a.m., relatively fresh head after a few hours away from the first real
 ## [2026-04-19 12:55 ART] — Story 1.15: Presence tracking (Hub state + heartbeats + AFK timer)
 
 **Story:** 1.15 — Presence tracking (Hub state + heartbeats + AFK timer)
-**Commit:** see git log — the commit that carries this journal entry.
+**Commit:** `473221d` — feat(api,realtime): presence tracking — hub state, heartbeats, AFK timer.
 
 ### What was built
 Server-side presence. A singleton `PresenceTracker` holds `ConcurrentDictionary<Guid, PresenceInfo>`; `PresenceInfo` carries `ConcurrentDictionary<connectionId, lastHeartbeat>`, a `HashSet<Guid> Rooms`, and the current `PresenceStatus` (`Online` / `AFK` / `Offline`). `ChatHub.OnConnectedAsync` tracks the connection and fans out a `PresenceChanged { Online }` to shared-room groups on first-connection-per-user. `OnDisconnectedAsync` is new — on last-connection-gone it removes the user entry and fans out `Offline`. A new `Heartbeat()` hub method refreshes per-connection timestamps and flips `AFK → Online` when a previously-idle user becomes active again. A `PresenceSweepService : BackgroundService` runs a `PeriodicTimer(10s)` loop, calls `tracker.SweepAfk(now, 60s)`, and fans out `AFK` transitions. The tracker never touches the DB; presence is pure in-memory state, CLAUDE.md §2.
