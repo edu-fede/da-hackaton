@@ -276,7 +276,7 @@ As a user, I want my message to appear for recipients in <3s without waiting on 
 **Story Points:** 3
 **Traces to:** FR-36, FR-41, NFR-4 (Architecture Constraint §1)
 
-**Status:** Done (commit pending)
+**Status:** Done (commit `2b74660`)
 
 ---
 
