@@ -37,6 +37,7 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 });
 
 builder.Services.AddSingleton<MessageQueue>();
+builder.Services.AddHostedService<MessageProcessorService>();
 builder.Services.AddSignalR();
 
 builder.Services

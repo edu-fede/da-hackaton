@@ -19,8 +19,13 @@ public static class MessageAppender
         Guid senderId,
         string text,
         Guid? replyToMessageId = null,
+        Guid? id = null,
+        DateTimeOffset? createdAt = null,
         CancellationToken ct = default)
     {
+        var messageId = id ?? Guid.NewGuid();
+        var messageCreatedAt = createdAt ?? DateTimeOffset.UtcNow;
+
         for (var attempt = 0; attempt < MaxAttempts; attempt++)
         {
             var nextSequence = (await db.Messages
@@ -29,11 +34,11 @@ public static class MessageAppender
 
             var message = new Message
             {
-                Id = Guid.NewGuid(),
+                Id = messageId,
                 RoomId = roomId,
                 SenderId = senderId,
                 Text = text,
-                CreatedAt = DateTimeOffset.UtcNow,
+                CreatedAt = messageCreatedAt,
                 ReplyToMessageId = replyToMessageId,
                 SequenceInRoom = nextSequence + 1,
             };

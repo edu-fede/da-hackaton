@@ -10,6 +10,7 @@ using Hackaton.Api.Tests.Fixtures;
 using Microsoft.AspNetCore.Http.Connections;
 using Microsoft.AspNetCore.Http.Connections.Client;
 using Microsoft.AspNetCore.SignalR.Client;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
@@ -122,26 +123,35 @@ public class ChatHubTests(ApiFactory factory) : IClassFixture<ApiFactory>
     }
 
     [Fact]
-    public async Task SendMessage_writes_to_channel_for_background_processing()
+    public async Task SendMessage_results_in_persisted_row_via_background_consumer()
     {
+        // Post-1.12: the queue drains continuously, so we assert at the DB level. The row
+        // only appears if (a) the Hub wrote to the channel and (b) the BackgroundService
+        // consumed it — the AC3 "writes a MessageWorkItem to the channel" invariant still
+        // holds, verified end-to-end.
         var ct = TestContext.Current.CancellationToken;
         var (ownerHttp, ownerCookie, _) = await AuthenticatedClientAsync(ct);
         var roomId = await CreateRoomAndAddMemberAsync(ownerHttp, joinerId: null, ct);
-
-        // Drain any stale items queued by earlier tests in this class.
-        var queue = _factory.Services.GetRequiredService<MessageQueue>();
-        while (queue.Reader.TryRead(out _)) { }
 
         await using var sender = BuildHubConnection(ownerCookie);
         await sender.StartAsync(ct);
         await sender.InvokeAsync("JoinRoom", roomId, ct);
         var ack = await sender.InvokeAsync<MessageBroadcast>("SendMessage", roomId, "for the consumer", (Guid?)null, ct);
 
-        var queued = await queue.Reader.ReadAsync(ct);
-        queued.Id.Should().Be(ack.Id);
-        queued.RoomId.Should().Be(roomId);
-        queued.Text.Should().Be("for the consumer");
-        queue.Reader.TryRead(out _).Should().BeFalse("only one message was sent");
+        var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(5);
+        Data.Message? persisted = null;
+        while (DateTimeOffset.UtcNow < deadline && persisted is null)
+        {
+            using var scope = _factory.Services.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            persisted = await db.Messages.SingleOrDefaultAsync(m => m.Id == ack.Id, ct);
+            if (persisted is null) await Task.Delay(100, ct);
+        }
+
+        persisted.Should().NotBeNull("the BackgroundService must persist the queued message");
+        persisted!.Text.Should().Be("for the consumer");
+        persisted.RoomId.Should().Be(roomId);
+        persisted.SequenceInRoom.Should().BeGreaterThan(0);
     }
 
     [Fact]

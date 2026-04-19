@@ -288,15 +288,17 @@ As a user, I want my message to appear for recipients in <3s without waiting on 
 As the system, I need the slow path to durably record every message with a monotonic per-room sequence so watermark resync and history work (FR-41, FR-42, Architecture Constraint §3).
 
 **Acceptance Criteria:**
-- [ ] Consumer is a singleton `BackgroundService` hosted inside the API process.
-- [ ] Each `MessageWorkItem` results in exactly one `Message` row with a valid `SequenceInRoom`.
-- [ ] Under concurrency (parallel sends to the same room), no duplicate `SequenceInRoom` (unique-constraint safety).
-- [ ] On DB failure the item is logged as error and the consumer continues (no crash loop).
+- [x] Consumer is a singleton `BackgroundService` hosted inside the API process.
+- [x] Each `MessageWorkItem` results in exactly one `Message` row with a valid `SequenceInRoom`.
+- [x] Under concurrency (parallel sends to the same room), no duplicate `SequenceInRoom` (unique-constraint safety).
+- [x] On DB failure the item is logged as error and the consumer continues (no crash loop).
 
 **Priority:** High
 **Labels:** api, db, realtime, testing
 **Story Points:** 3
 **Traces to:** FR-41, FR-42, NFR-4 (Architecture Constraint §3)
+
+**Status:** Done (commit pending)
 
 ---
 
