@@ -298,7 +298,7 @@ As the system, I need the slow path to durably record every message with a monot
 **Story Points:** 3
 **Traces to:** FR-41, FR-42, NFR-4 (Architecture Constraint §3)
 
-**Status:** Done (commit pending)
+**Status:** Done (commit `a70e1f3`)
 
 ---
 
