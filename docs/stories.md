@@ -343,7 +343,7 @@ As a user, I want to see messages in real time and scroll back through history s
 **Story Points:** 5
 **Traces to:** FR-41, FR-42, FR-51, NFR-6 — **⚠ split candidate:** `a) SignalR wiring + render`, `b) infinite scroll + watermark resync`.
 
-**Status:** Done (commit pending)
+**Status:** Done (commit `5d3c056`)
 
 ---
 
