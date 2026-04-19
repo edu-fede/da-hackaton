@@ -221,15 +221,17 @@ As an authenticated user, I want to create rooms, discover public ones, and join
 As a user, I want to see and interact with rooms in the sidebar per Appendix A layout (FR-49, FR-50).
 
 **Acceptance Criteria:**
-- [ ] Sidebar lists public + private rooms the user belongs to, plus a public catalog view.
-- [ ] "Create room" modal with name, description, visibility toggle.
-- [ ] Clicking a room opens it in the main chat area (empty at this stage is acceptable).
-- [ ] Sidebar collapses accordion-style when a room is active.
+- [x] Sidebar lists public + private rooms the user belongs to, plus a public catalog view.
+- [x] "Create room" modal with name, description, visibility toggle.
+- [x] Clicking a room opens it in the main chat area (empty at this stage is acceptable).
+- [x] Sidebar collapses accordion-style when a room is active.
 
 **Priority:** High
 **Labels:** web
 **Story Points:** 3
 **Traces to:** FR-22, FR-24, FR-49, FR-50
+
+**Status:** Done (commit pending)
 
 ---
 

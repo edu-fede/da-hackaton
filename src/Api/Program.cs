@@ -78,6 +78,26 @@ app.MapGet("/api/me", (ClaimsPrincipal user) => Results.Ok(new
     username = user.FindFirstValue(ClaimTypes.Name),
 })).RequireAuthorization();
 
+app.MapGet("/api/me/rooms", async (
+    ClaimsPrincipal principal,
+    AppDbContext db,
+    CancellationToken ct) =>
+{
+    var userId = Guid.Parse(principal.FindFirstValue(ClaimTypes.NameIdentifier)!);
+    var rooms = await db.RoomMembers
+        .Where(m => m.UserId == userId && m.Room!.DeletedAt == null)
+        .OrderBy(m => m.Room!.Name)
+        .Select(m => new MyRoomEntry(
+            m.Room!.Id,
+            m.Room.Name,
+            m.Room.Description,
+            m.Room.Visibility,
+            m.Role,
+            db.RoomMembers.Count(x => x.RoomId == m.RoomId)))
+        .ToListAsync(ct);
+    return Results.Ok(rooms);
+}).RequireAuthorization();
+
 app.MapGet("/health", async (AppDbContext db, CancellationToken ct) =>
 {
     var dbUp = false;

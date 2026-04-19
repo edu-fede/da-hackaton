@@ -17,3 +17,11 @@ public sealed record RoomCatalogEntry(
     string Name,
     string Description,
     int MemberCount);
+
+public sealed record MyRoomEntry(
+    Guid Id,
+    string Name,
+    string Description,
+    RoomVisibility Visibility,
+    RoomRole Role,
+    int MemberCount);
