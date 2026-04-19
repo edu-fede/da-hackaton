@@ -28,6 +28,7 @@ class FakeHub {
 }
 
 let fakeHub: FakeHub;
+let callOrder: string[];
 
 const ROOM_ID = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 
@@ -92,19 +93,30 @@ describe('RoomPage', () => {
 
   beforeEach(() => {
     localStorage.clear();
+    callOrder = [];
     fakeHub = new FakeHub();
+    const originalJoinRoom = fakeHub.joinRoom;
+    fakeHub.joinRoom = vi.fn(async (roomId: string) => {
+      callOrder.push('hub-join');
+      return originalJoinRoom(roomId);
+    });
     fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === 'string' ? input : input.toString();
+      const method = init?.method ?? 'GET';
       if (url.endsWith('/api/me')) return jsonResponse(200, currentUser);
       if (url.endsWith('/api/me/rooms')) return jsonResponse(200, []);
-      if (url.endsWith('/api/rooms') && (init?.method ?? 'GET') === 'GET') return jsonResponse(200, []);
+      if (url.endsWith('/api/rooms') && method === 'GET') return jsonResponse(200, []);
+      if (url.endsWith(`/api/rooms/${ROOM_ID}/join`) && method === 'POST') {
+        callOrder.push('rest-join');
+        return new Response(null, { status: 204 });
+      }
       if (url.includes(`/api/rooms/${ROOM_ID}/messages`)) {
         const seed = [buildMessage(1), buildMessage(2), buildMessage(3)];
         return jsonResponse(200, seed);
       }
       if (url.endsWith('/api/rooms/resync')) return jsonResponse(200, []);
       if (url.endsWith('/health')) return jsonResponse(200, { status: 'healthy', database: 'up', timestamp: '2026-04-19T00:00:00Z' });
-      throw new Error(`Unexpected fetch: ${init?.method ?? 'GET'} ${url}`);
+      throw new Error(`Unexpected fetch: ${method} ${url}`);
     });
     vi.stubGlobal('fetch', fetchMock);
   });
@@ -160,6 +172,22 @@ describe('RoomPage', () => {
 
     await waitFor(() => expect(screen.getAllByTestId('message-row')).toHaveLength(4));
     expect(screen.getByText('live broadcast')).toBeInTheDocument();
+  });
+
+  test('invokes REST /join before hub.joinRoom on mount', async () => {
+    renderRoom();
+
+    await waitFor(() => expect(fakeHub.joinRoom).toHaveBeenCalledWith(ROOM_ID));
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining(`/api/rooms/${ROOM_ID}/join`),
+      expect.objectContaining({ method: 'POST' }),
+    );
+    const restIdx = callOrder.indexOf('rest-join');
+    const hubIdx = callOrder.indexOf('hub-join');
+    expect(restIdx).toBeGreaterThanOrEqual(0);
+    expect(hubIdx).toBeGreaterThanOrEqual(0);
+    expect(restIdx).toBeLessThan(hubIdx);
   });
 
   test('watermark is persisted to localStorage for the newest seen sequence', async () => {

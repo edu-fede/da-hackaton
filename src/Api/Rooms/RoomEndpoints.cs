@@ -128,6 +128,17 @@ public static class RoomEndpoints
                 title: "Room not found");
         }
 
+        // Idempotent: if the caller is already a member, short-circuit BEFORE the
+        // visibility/ban gates. This lets the frontend unconditionally call /join
+        // before opening a Hub connection without worrying about the user's prior
+        // membership state (Your Rooms vs. catalog navigation, direct URL, etc.).
+        var already = await db.RoomMembers
+            .AnyAsync(m => m.RoomId == id && m.UserId == userId, ct);
+        if (already)
+        {
+            return Results.NoContent();
+        }
+
         if (room.Visibility != RoomVisibility.Public)
         {
             return Results.Problem(
@@ -145,13 +156,6 @@ public static class RoomEndpoints
             return Results.Problem(
                 statusCode: StatusCodes.Status403Forbidden,
                 title: "You are banned from this room");
-        }
-
-        var already = await db.RoomMembers
-            .AnyAsync(m => m.RoomId == id && m.UserId == userId, ct);
-        if (already)
-        {
-            return Results.NoContent();
         }
 
         db.RoomMembers.Add(new RoomMember

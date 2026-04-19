@@ -206,6 +206,29 @@ public class RoomEndpointsTests(ApiFactory factory) : IClassFixture<ApiFactory>
     }
 
     [Fact]
+    public async Task Join_called_twice_is_idempotent_returns_204_both_times_and_one_member_row()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var owner = await AuthenticatedClientAsync(ct);
+        var joiner = await AuthenticatedClientAsync(ct);
+        var joinerId = await CurrentUserIdAsync(joiner, ct);
+
+        var created = await owner.PostAsJsonAsync("/api/rooms", new { name = UniqueRoomName("idem"), description = "", visibility = "Public" }, ct);
+        var roomId = (await created.Content.ReadFromJsonAsync<JsonElement>(ct)).GetProperty("id").GetGuid();
+
+        var first = await joiner.PostAsync($"/api/rooms/{roomId}/join", null, ct);
+        var second = await joiner.PostAsync($"/api/rooms/{roomId}/join", null, ct);
+
+        first.StatusCode.Should().Be(HttpStatusCode.NoContent);
+        second.StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var count = await db.RoomMembers.CountAsync(m => m.RoomId == roomId && m.UserId == joinerId, ct);
+        count.Should().Be(1);
+    }
+
+    [Fact]
     public async Task Join_banned_user_returns_403()
     {
         var ct = TestContext.Current.CancellationToken;

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { api } from '../api/client';
+import { api, ApiError } from '../api/client';
 import { useChatHub, writeWatermark } from '../signalr/SignalRProvider';
 import type { MessageBroadcast } from '../signalr/ChatHubClient';
 
@@ -90,10 +90,25 @@ export function useRoomMessages(roomId: string | undefined): UseRoomMessagesResu
         if (joinedRef.current && joinedRef.current !== roomId) {
           await hub.leaveRoom(joinedRef.current).catch(() => undefined);
         }
+        // Establish DB membership first — idempotent on the backend. The Hub's JoinRoom
+        // only adds the connection to the SignalR group and requires an existing RoomMember row.
+        await api.post(`/api/rooms/${roomId}/join`);
+        if (cancelled) return;
         await hub.joinRoom(roomId);
         if (!cancelled) joinedRef.current = roomId;
-      } catch {
-        // JoinRoom can fail (not a member). UI already renders the history; just don't subscribe live.
+      } catch (err) {
+        if (cancelled) return;
+        if (err instanceof ApiError) {
+          if (err.status === 403) {
+            setError('You cannot join this room.');
+          } else if (err.status === 404) {
+            setError('This room no longer exists.');
+          } else {
+            setError(err.message || 'Failed to join room.');
+          }
+        } else {
+          setError(err instanceof Error ? err.message : 'Failed to join room.');
+        }
       }
     })();
 
