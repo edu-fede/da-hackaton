@@ -176,15 +176,17 @@ As a user, I want web pages to register, sign in, and stay signed in across relo
 As the backend, I need the room model so room features (creation, listing, membership, admins) can be built on top (FR-22, FR-23, FR-29..FR-32).
 
 **Acceptance Criteria:**
-- [ ] `Room { Id, Name (unique), Description, Visibility, OwnerId, CreatedAt, DeletedAt? }`.
-- [ ] `RoomMember { RoomId, UserId, Role (Member|Admin|Owner), JoinedAt }`; composite PK `(RoomId, UserId)`.
-- [ ] `RoomBan { RoomId, UserId, BannedByUserId, BannedAt, Reason? }`; composite PK `(RoomId, UserId)`.
-- [ ] Migration applied; round-trip insert/query test green.
+- [x] `Room { Id, Name (unique), Description, Visibility, OwnerId, CreatedAt, DeletedAt? }`.
+- [x] `RoomMember { RoomId, UserId, Role (Member|Admin|Owner), JoinedAt }`; composite PK `(RoomId, UserId)`.
+- [x] `RoomBan { RoomId, UserId, BannedByUserId, BannedAt, Reason? }`; composite PK `(RoomId, UserId)`.
+- [x] Migration applied; round-trip insert/query test green.
 
 **Priority:** High
 **Labels:** api, db
 **Story Points:** 2
 **Traces to:** FR-22, FR-23, FR-29, FR-30, FR-31, FR-32
+
+**Status:** Done (commit pending)
 
 ---
 
