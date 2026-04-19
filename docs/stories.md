@@ -320,7 +320,7 @@ As a reconnecting client, I want to fetch only the messages I missed per room, a
 **Story Points:** 2
 **Traces to:** FR-42 (Architecture Constraint §3)
 
-**Status:** Done (commit pending)
+**Status:** Done (commit `186052f`)
 
 ---
 

@@ -839,3 +839,68 @@ The thing I want to bank from this story is **the stub-style trap for hosted ser
 - **Story 1.13 — Watermark resync endpoint.** Pure REST story, no SignalR change. `POST /api/rooms/resync` accepts `[{roomId, lastSeq}, …]` and returns, per room the caller is still a member of, any `Messages` with `SequenceInRoom > lastSeq` (up to a cap, probably 500). Rooms where the caller isn't a member return `{roomId, notAMember: true}` so the client can discard its stale watermark. Points: 2. Prerequisites: DB has messages (now that 1.12 persists them); we need a reusable "is the caller a member of this room" helper since 1.8's `Join`/`Leave` and 1.10's history endpoint both inline it — worth extracting. **Pre-decision to lock at plan time:** cap size on returned messages per room (500? 1000?) — matters because a client that's been offline for a week could otherwise request megabytes in one shot. Also: should the endpoint return only ACTIVE (non-deleted) messages, or include tombstones like the history endpoint does? Consistency argues for "include tombstones"; latency argues for "skip them to save bytes". Default: include, for the same reason as 1.10.
 
 ---
+
+## [2026-04-19 01:13 ART] — Watermark resync endpoint
+
+**Story:** Story 1.13 — Watermark resync endpoint
+**Commit:** `186052f` — feat(api): watermark resync endpoint — POST /api/rooms/resync
+
+### What was built
+`POST /api/rooms/resync` — the reconnect-side half of the watermark protocol. A client sends an array of `{roomId, lastSeq}` watermark tuples; the server returns a one-to-one array where each entry is either `{notAMember: false, messages: [MessageEntry…]}` (caller is a current member — tail of messages above `lastSeq` in ascending order, capped at 500) or `{notAMember: true, messages: null}` (caller was removed OR the room is unknown/soft-deleted — client should forget that watermark). Requests over 100 rooms get `400 ProblemDetails`. Reuses `MessageEntry` from Story 1.10 (so tombstones flow identically — `text: null` with `deletedAt` populated). With this in place, CLAUDE.md §3's "no per-user offline mailbox, reconcile via the DB" story is fully operational: Hub fast-path (1.11) + BackgroundService slow-path (1.12) + resync REST (this) together give every reconnecting client a gap-free history without any server-side queueing per-user.
+
+### ADLC traceability
+- **Requirements satisfied:** FR-42 (reconnecting client sees messages it missed while offline — without any per-user inbox). Architecture Constraint §3 closed: client tracks per-room `lastSeq` in localStorage, calls this endpoint on reconnect, gets back exactly the missing tail.
+- **AC status:** all 4 in §Story 1.13 now `[x]`. `**Status:** Done (commit 186052f)`.
+- **Decisions invoked:** none from stories.md Decisions (§1-§8) apply directly. Pre-decisions flagged at the end of the 1.12 journal were resolved at plan time: cap = 500 messages/room, include tombstones for sequence continuity, cap requests at 100 rooms to bound worst-case response size (~50K messages).
+
+### Non-obvious decisions
+- **Decision:** Response has one entry per input watermark, preserving input order; no reordering, no deduplication, no implicit filtering.
+  **Alternatives considered:** return a dictionary keyed by `roomId` (deduping automatically); filter out `notAMember` entries on the server.
+  **Why:** a strict array-in / array-out contract is the easiest for the client to consume — `for i in request: apply response[i]`. Dictionary-keyed responses force the client to pair up keys by hand and handle missing keys. Filtering `notAMember` server-side would require the client to re-read its own watermark list to discover "oh, I had this roomId in my request but the server didn't return it, so it must be not-a-member" — that's worse UX than an explicit tombstone.
+- **Decision:** `notAMember: true` covers three different server-side states uniformly.
+  **Alternatives considered:** separate `roomNotFound`, `roomDeleted`, and `notAMember` fields.
+  **Why:** from the client's perspective, all three states produce the same action — discard the watermark, remove the room from the UI. Distinguishing them server-side leaks information about rooms the caller shouldn't see anyway (room existence is essentially a permission). `notAMember` is the honest, privacy-respecting union type.
+- **Decision:** Soft-deleted rooms → `notAMember: true`, not a separate `roomDeleted: true`.
+  **Alternatives considered:** expose deletion as its own field so a client could show "this room was deleted" to the last members.
+  **Why:** the task's ban/deletion semantics don't require a distinction. Per CLAUDE.md §3, when a room is gone the client discards all state for it — same action as removed-from-room. If a later story wants "this room was deleted" UI, that's a separate read endpoint, not an overload of the resync contract.
+- **Decision:** Silent clamp of `lastSeq < 0` to `0` rather than returning `400`.
+  **Alternatives considered:** reject with `400 ProblemDetails` explaining the client sent a negative value.
+  **Why:** negative watermarks have one possible interpretation — "I haven't seen anything, give me everything" — which is exactly `lastSeq = 0`. Rejecting would force the client to handle the edge on its end for no real safety gain. Silently doing the right thing here is more forgiving to client code paths that drop a bad value through arithmetic.
+- **Decision:** Cap at 500 messages per room per call, not paginated inside the response.
+  **Alternatives considered:** return all missing messages (potentially unbounded); paginate with a `nextLastSeq` field inside each room result.
+  **Why:** 500 is enough to unblock the reconnect flow in the common case (client comes back after lunch — tens of messages). For worst-case reconnect (client offline for a week in a hot room), the client sees 500 messages, notices `messages[-1].sequenceInRoom - lastSeq == 500`, and re-calls with the new last. Paginating inside the response wastes bytes for the common case. 500 × 100 rooms × ~400 bytes per message ≈ 20MB max response — large but bounded, and clients rarely send 100 rooms at once.
+- **Decision:** Did NOT extract a reusable "is user a member of this room" helper yet.
+  **Alternatives considered:** refactor `IsMemberOf(roomId, userId)` as a static helper used by Join/Leave (1.8), history endpoint (1.10), and now this endpoint.
+  **Why:** three inlined uses is the edge of "rule of three" but each callsite is 1 line of LINQ and each has slightly different filter requirements (the resync case includes a `Room.DeletedAt == null` filter because deleted rooms should look notAMember). Premature extraction would add a helper API with 3 parameters to handle variance. Noted in the plan: "extract on 4th caller, likely 1.15 presence".
+
+### Friction and blockers
+- **None worth calling out.** Test-first cycle was textbook: 7 tests red against a 501 stub, 6 red / 1 passing (the anon-401 test because auth short-circuits before hitting the stub), implementation pass → all 7 green on first run. Live curl verified both shapes (unknown room → `notAMember: true, messages: null`; member room → `notAMember: false, messages: []`). Shortest story of the day by wall clock.
+- **One minor hesitation during implementation**: whether to inline the `Room.DeletedAt == null` check into the membership query or layer it as a separate `AnyAsync`. Chose inline — shorter + fewer round-trips. Documented in the "decisions" list above.
+- **Smooth sailing when the plan carries over the prior story's note.** The 1.12 journal explicitly flagged (a) cap size tradeoff and (b) tombstone-include decision for 1.13. Both turned into one-line settled answers at plan time instead of mid-implementation bikeshed. Worth reiterating as a pattern: **the last field of every `/checkpoint` entry ("Next") is load-bearing for the efficiency of the next story**; when it names the specific decisions to pre-resolve, the next plan-mode session takes 60 seconds instead of 5 minutes.
+
+### Verification evidence
+- Tests: **76 passing** (71 backend: 1 sanity + 3 persistence + 12 auth + 6 session + 5 rooms-persistence + 13 rooms-endpoints + 3 my-rooms + 3 appender + 8 message-endpoints + 7 chat-hub + 3 processor + 7 resync; 5 frontend unchanged).
+- Build: ✅ `dotnet build DataArtHackaton.slnx` clean; 0 warnings.
+- `docker compose up`: ✅ — full teardown with `-v` + rebuild, all three services healthy in ~8s.
+- End-to-end via live `curl`:
+  - Registered `henry@example.com`, logged in, created `resync-live` (public).
+  - `POST /api/rooms/resync [{roomId: <zero-guid>, lastSeq: 0}]` → `[{roomId: "00000000-…", notAMember: true, messages: null}]` — 200 OK, unknown-room branch.
+  - `POST /api/rooms/resync [{roomId: <henry's-room>, lastSeq: 0}]` → `[{roomId: "e45c…", notAMember: false, messages: []}]` — 200 OK, member-with-empty-tail branch.
+- JSON serialization: `notAMember: true` comes with `messages: null` (not omitted) — `System.Text.Json` defaults preserve null properties, which is exactly what the client contract wants.
+
+### Reflection
+Two small takeaways. First, **the "include everything → let the client filter" impulse was right** for this endpoint — every decision that could have leaked per-room-type complexity (separate `roomDeleted`, separate `roomNotFound`) got collapsed to a single `notAMember: true` union and it made the client contract easier, not harder. Every time I reach for a richer error type, I should ask "would the client branch on this difference?" — if the answer is no, one flag wins. Second, **the rule-of-three helper extraction is only worth it when the callsites actually converge**. Three inlined membership checks across three endpoints look like obvious dedup candidates, but each one filters the row slightly differently (RoomBans check in Join, soft-delete check in history, soft-delete + implicit in resync). Extraction would have meant a helper with three bool parameters to handle variance — worse than the inlined originals. I'll hold the line: only extract when the 4th caller arrives AND the semantic is identical, not just "similar shape".
+
+### Time
+- **Agent wall clock:** ~18 min from `/add-feature 1.13` through commit. Breakdown: ~1 min inline plan review; ~2 min DTO additions (`WatermarkEntry`, `ResyncRoomResult`) + stub endpoint returning 501; ~4 min write 7 failing tests (cleanest iteration of the pattern yet — seed helper, membership-remove helper, the assertions write themselves now); ~1 min confirm 6/7 red, 1 pre-green (auth-401); ~3 min implement handler (membership check + take-and-project pattern); ~1 min 7/7 green; ~4 min docker teardown/rebuild + live curl; ~2 min commit + stories.md.
+- **Equivalent human work:** ~1.5 hours end-to-end. Endpoint contract design + input validation + cap semantics: 20 min. DTO definitions: 10 min. 7 integration tests with seeding + teardown: 40 min. Handler implementation: 15 min. Docker rebuild + curl sanity + journal: 20 min.
+- **Productivity ratio:** ~5× this story. Smaller than some because the story itself is genuinely small — 2 points, narrow scope, no concurrency or realtime. The multiplier tends to be larger on the complex stories and tighter on the simple ones, which is actually the right shape: the agent scales work down to match story size, not the other way around.
+- **Developer-time invested:** ~5 min — scanned the plan (~2 min), reviewed the handler's `isMember` query for the soft-delete filter (~1 min), eyeballed the curl output for both branches (~1 min), pre-commit diff (~1 min). Minimal — this story was mostly "execute the pattern" with nothing novel.
+
+### Cost so far (rough)
+- Running total on the MVP track (Stories 1.1 → 1.13): roughly **7 hours of agent-wall-clock**. Backend REST + realtime surface is now FEATURE-COMPLETE for MVP messaging. Web side still needs the SignalR client + infinite scroll (1.14), and both halves need presence (1.15, 1.16). Three stories remaining before MVP is walking-talking-chat.
+
+### Next
+- **Story 1.14 — Web: SignalR client + chat window with infinite scroll.** Biggest frontend story of the MVP. Five separate threads of work: (a) `@microsoft/signalr` client, connected on login, cookie-authenticated, with exponential backoff reconnect; (b) a chat view that renders received `MessageReceived` events into the main pane; (c) infinite scroll upward via the existing `GET /api/rooms/{id}/messages?beforeSeq=` endpoint; (d) auto-scroll to bottom only when user is within N px of bottom (preserve read-older-history position); (e) `lastSeq` persisted to `localStorage` per room, resync via the new `POST /api/rooms/resync` endpoint on reconnect. The story card flags this as a **split candidate** (5 pts = ½ day), and I'd do it: `1.14a SignalR wiring + render` and `1.14b infinite scroll + watermark resync` are naturally separable. Plan-mode should open with that split question. **Pre-decision to lock**: whether the SignalR client lives in a React context (pairs with `AuthProvider`) or a plain module singleton. Context lets components subscribe to events via a hook; module singleton is simpler but doesn't play nicely with StrictMode double-mounts. Lean context.
+
+---
