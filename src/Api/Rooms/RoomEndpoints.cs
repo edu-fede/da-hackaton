@@ -16,6 +16,7 @@ public static class RoomEndpoints
         group.MapGet("/", ListRooms);
         group.MapPost("/{id:guid}/join", JoinRoom);
         group.MapPost("/{id:guid}/leave", LeaveRoom);
+        group.MapGet("/{id:guid}/members", GetMembers);
         return group;
     }
 
@@ -199,5 +200,44 @@ public static class RoomEndpoints
         await db.SaveChangesAsync(ct);
 
         return Results.NoContent();
+    }
+
+    private static async Task<IResult> GetMembers(
+        Guid id,
+        AppDbContext db,
+        HttpContext http,
+        CancellationToken ct)
+    {
+        var userId = Guid.Parse(http.User.FindFirstValue(ClaimTypes.NameIdentifier)!);
+
+        var roomExists = await db.Rooms
+            .AnyAsync(r => r.Id == id && r.DeletedAt == null, ct);
+        if (!roomExists)
+        {
+            return Results.Problem(
+                statusCode: StatusCodes.Status404NotFound,
+                title: "Room not found");
+        }
+
+        var isMember = await db.RoomMembers
+            .AnyAsync(m => m.RoomId == id && m.UserId == userId, ct);
+        if (!isMember)
+        {
+            return Results.Problem(
+                statusCode: StatusCodes.Status403Forbidden,
+                title: "You are not a member of this room");
+        }
+
+        // Full roster — acceptable for MVP. For rooms approaching NFR-2's 1000-member cap
+        // pagination would be required (cursor on (Role, Username) with a server page size).
+        var members = await db.RoomMembers
+            .Where(m => m.RoomId == id)
+            .Select(m => new RoomMemberEntry(
+                m.UserId,
+                m.User!.Username,
+                m.Role))
+            .ToListAsync(ct);
+
+        return Results.Ok(members);
     }
 }

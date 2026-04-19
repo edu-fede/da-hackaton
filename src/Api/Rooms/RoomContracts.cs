@@ -25,3 +25,8 @@ public sealed record MyRoomEntry(
     RoomVisibility Visibility,
     RoomRole Role,
     int MemberCount);
+
+public sealed record RoomMemberEntry(
+    Guid UserId,
+    string Username,
+    RoomRole Role);

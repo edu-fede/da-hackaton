@@ -1,5 +1,7 @@
 import { useEffect, useLayoutEffect, useRef } from 'react';
 import type { ChatMessage } from '../hooks/useRoomMessages';
+import { usePresenceMap } from '../signalr/SignalRProvider';
+import { PresenceBadge } from './PresenceBadge';
 
 type MessageListProps = {
   messages: ChatMessage[];
@@ -11,6 +13,7 @@ type MessageListProps = {
 const AUTO_SCROLL_THRESHOLD_PX = 120;
 
 export function MessageList({ messages, hasMoreHistory, loading, onReachTop }: MessageListProps) {
+  const presence = usePresenceMap();
   const scrollRef = useRef<HTMLDivElement>(null);
   const previousCountRef = useRef(0);
   const stickyBottomRef = useRef(true);
@@ -90,7 +93,10 @@ export function MessageList({ messages, hasMoreHistory, loading, onReachTop }: M
           className="rounded-md bg-slate-900/40 border border-slate-800 px-3 py-2"
         >
           <header className="flex items-baseline justify-between text-xs text-slate-400">
-            <span className="text-slate-200 font-medium">{m.senderUsername}</span>
+            <span className="flex items-center gap-1.5 text-slate-200 font-medium">
+              <PresenceBadge status={presence.get(m.senderId)?.status} />
+              {m.senderUsername}
+            </span>
             <time className="text-slate-500">
               {new Date(m.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
             </time>

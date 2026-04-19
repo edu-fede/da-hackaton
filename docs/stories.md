@@ -377,15 +377,16 @@ As a contact, I want to see online/AFK/offline indicators reflecting real activi
 As a user, I want my presence to reflect actual activity and to see others' presence updating live (FR-12..FR-14, FR-50).
 
 **Acceptance Criteria:**
-- [ ] Web attaches listeners for `mousemove`, `keydown`, `touchstart`, `scroll`; collapses into at most one `Heartbeat` call per 10–15s window.
-- [ ] When tab loses focus OR is hidden (Page Visibility API), stop emitting.
-- [ ] Sidebar shows ● (online) / ◐ (AFK) / ○ (offline) glyphs per contact and per room member.
-- [ ] Updates render within 2s of the server-side `PresenceChanged` event.
+- [x] Web attaches listeners for `mousemove`, `keydown`, `touchstart`, `scroll`; collapses into at most one `Heartbeat` call per 10–15s window.
+- [x] When tab loses focus OR is hidden (Page Visibility API), stop emitting.
+- [x] Sidebar shows ● (online) / ◐ (AFK) / ○ (offline) glyphs per contact and per room member.
+- [x] Updates render within 2s of the server-side `PresenceChanged` event.
 
 **Priority:** High
 **Labels:** web, realtime
 **Story Points:** 2
 **Traces to:** FR-12, FR-13, FR-14, FR-50, NFR-5
+**Status:** Done (commit pending). "Per contact" deferred to Story 2.1 — no Friendship entity yet. Implemented "per room member" via new `MembersPanel` on `RoomPage` (new `GET /api/rooms/{id}/members` endpoint, member-check gated) and presence dot next to sender usernames in `MessageList`. Members sorted Owner → Admin → Member, online-first, then alphabetical.
 
 ---
 

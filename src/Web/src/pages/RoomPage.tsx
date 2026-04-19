@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { api } from '../api/client';
+import { MembersPanel } from '../components/MembersPanel';
 import { MessageComposer } from '../components/MessageComposer';
 import { MessageList } from '../components/MessageList';
 import { Sidebar } from '../components/Sidebar';
@@ -65,23 +66,26 @@ export function RoomPage() {
       </header>
 
       <div className="flex-1 grid grid-cols-1 lg:grid-cols-[1fr_320px] min-h-0">
-        <section className="flex flex-col min-h-0">
-          {error && (
-            <div
-              role="alert"
-              data-testid="room-error"
-              className="border-b border-red-900 bg-red-950/40 text-red-200 text-sm px-6 py-2"
-            >
-              {error}
-            </div>
-          )}
-          <MessageList
-            messages={messages}
-            hasMoreHistory={hasMoreHistory}
-            loading={loading}
-            onReachTop={loadOlder}
-          />
-          <MessageComposer onSubmit={send} sending={sending} />
+        <section className="flex min-h-0">
+          <div className="flex flex-col flex-1 min-h-0">
+            {error && (
+              <div
+                role="alert"
+                data-testid="room-error"
+                className="border-b border-red-900 bg-red-950/40 text-red-200 text-sm px-6 py-2"
+              >
+                {error}
+              </div>
+            )}
+            <MessageList
+              messages={messages}
+              hasMoreHistory={hasMoreHistory}
+              loading={loading}
+              onReachTop={loadOlder}
+            />
+            <MessageComposer onSubmit={send} sending={sending} />
+          </div>
+          {id && <MembersPanel roomId={id} />}
         </section>
 
         <Sidebar

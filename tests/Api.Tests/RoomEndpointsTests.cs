@@ -336,4 +336,62 @@ public class RoomEndpointsTests(ApiFactory factory) : IClassFixture<ApiFactory>
 
         response.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
+
+    // ----- GET /api/rooms/{id}/members -----
+
+    [Fact]
+    public async Task Members_returns_full_list_with_roles_for_member()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var owner = await AuthenticatedClientAsync(ct);
+        var ownerId = await CurrentUserIdAsync(owner, ct);
+        var joiner = await AuthenticatedClientAsync(ct);
+        var joinerId = await CurrentUserIdAsync(joiner, ct);
+
+        var created = await owner.PostAsJsonAsync("/api/rooms", new { name = UniqueRoomName("members"), description = "", visibility = "Public" }, ct);
+        var roomId = (await created.Content.ReadFromJsonAsync<JsonElement>(ct)).GetProperty("id").GetGuid();
+        (await joiner.PostAsync($"/api/rooms/{roomId}/join", null, ct)).StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        var response = await owner.GetAsync($"/api/rooms/{roomId}/members", ct);
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>(ct);
+        var rows = body.EnumerateArray().ToList();
+        rows.Should().HaveCount(2);
+
+        var ownerRow = rows.Single(r => r.GetProperty("userId").GetGuid() == ownerId);
+        ownerRow.GetProperty("role").GetString().Should().Be("Owner");
+        ownerRow.GetProperty("username").GetString().Should().NotBeNullOrEmpty();
+
+        var joinerRow = rows.Single(r => r.GetProperty("userId").GetGuid() == joinerId);
+        joinerRow.GetProperty("role").GetString().Should().Be("Member");
+        joinerRow.GetProperty("username").GetString().Should().NotBeNullOrEmpty();
+    }
+
+    [Fact]
+    public async Task Members_for_non_member_returns_403_ProblemDetails()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var owner = await AuthenticatedClientAsync(ct);
+        var stranger = await AuthenticatedClientAsync(ct);
+
+        var created = await owner.PostAsJsonAsync("/api/rooms", new { name = UniqueRoomName("mem403"), description = "", visibility = "Public" }, ct);
+        var roomId = (await created.Content.ReadFromJsonAsync<JsonElement>(ct)).GetProperty("id").GetGuid();
+
+        var response = await stranger.GetAsync($"/api/rooms/{roomId}/members", ct);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        response.Content.Headers.ContentType!.MediaType.Should().Be("application/problem+json");
+    }
+
+    [Fact]
+    public async Task Members_for_nonexistent_room_returns_404()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var client = await AuthenticatedClientAsync(ct);
+
+        var response = await client.GetAsync($"/api/rooms/{Guid.NewGuid()}/members", ct);
+
+        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
 }

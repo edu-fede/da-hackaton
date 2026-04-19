@@ -1,7 +1,9 @@
-import { createContext, useContext, useEffect, useMemo } from 'react';
+import { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import { ChatHubClient } from './ChatHubClient';
+import type { PresenceStatus } from './ChatHubClient';
 import { api } from '../api/client';
+import { useHeartbeat } from '../hooks/useHeartbeat';
 
 type MyRoomForResync = { id: string };
 
@@ -11,11 +13,16 @@ type ResyncResult = {
   messages: Array<{ id: string; sequenceInRoom: number }> | null;
 };
 
+export type PresenceInfo = { status: PresenceStatus; at: string };
+
 type SignalRContextValue = {
   hub: ChatHubClient | null;
+  presence: ReadonlyMap<string, PresenceInfo>;
 };
 
-const SignalRContext = createContext<SignalRContextValue>({ hub: null });
+const emptyPresence: ReadonlyMap<string, PresenceInfo> = new Map();
+
+const SignalRContext = createContext<SignalRContextValue>({ hub: null, presence: emptyPresence });
 
 const watermarkKeyPrefix = 'hackaton.watermark.';
 
@@ -42,6 +49,16 @@ export function useChatHub(): ChatHubClient | null {
   return useContext(SignalRContext).hub;
 }
 
+export function usePresence(userId: string | undefined | null): PresenceStatus | undefined {
+  const { presence } = useContext(SignalRContext);
+  if (!userId) return undefined;
+  return presence.get(userId)?.status;
+}
+
+export function usePresenceMap(): ReadonlyMap<string, PresenceInfo> {
+  return useContext(SignalRContext).presence;
+}
+
 export function SignalRProvider({
   children,
   hub: providedHub,
@@ -50,6 +67,7 @@ export function SignalRProvider({
   hub?: ChatHubClient;
 }) {
   const hub = useMemo(() => providedHub ?? new ChatHubClient(), [providedHub]);
+  const [presence, setPresence] = useState<ReadonlyMap<string, PresenceInfo>>(emptyPresence);
 
   useEffect(() => {
     let cancelled = false;
@@ -64,18 +82,34 @@ export function SignalRProvider({
       }
     })();
 
+    const offPresence = hub.onPresenceChanged((payload) => {
+      setPresence((prev) => {
+        const next = new Map(prev);
+        if (payload.status === 'Offline') {
+          next.delete(payload.userId);
+        } else {
+          next.set(payload.userId, { status: payload.status, at: payload.at });
+        }
+        return next;
+      });
+    });
+
     const offReconnect = hub.onReconnected(() => {
       resyncAllKnownRooms().catch(() => undefined);
     });
 
     return () => {
       cancelled = true;
+      offPresence();
       offReconnect();
       hub.stop().catch(() => undefined);
     };
   }, [hub]);
 
-  return <SignalRContext.Provider value={{ hub }}>{children}</SignalRContext.Provider>;
+  useHeartbeat(hub);
+
+  const contextValue = useMemo(() => ({ hub, presence }), [hub, presence]);
+  return <SignalRContext.Provider value={contextValue}>{children}</SignalRContext.Provider>;
 }
 
 async function resyncAllKnownRooms(): Promise<void> {

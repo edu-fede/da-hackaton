@@ -1,15 +1,17 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { AuthProvider } from '../auth/AuthProvider';
 import { RoomPage } from './RoomPage';
 import { SignalRProvider } from '../signalr/SignalRProvider';
-import type { ChatHubClient, MessageBroadcast } from '../signalr/ChatHubClient';
+import type { ChatHubClient, MessageBroadcast, PresenceBroadcastPayload } from '../signalr/ChatHubClient';
 
 type MessageReceivedHandler = (m: MessageBroadcast) => void;
+type PresenceHandler = (p: PresenceBroadcastPayload) => void;
 
 class FakeHub {
   private handlers: MessageReceivedHandler[] = [];
+  private presenceHandlers: PresenceHandler[] = [];
   private connectedResolvers: Array<() => void> = [];
   state: 'Connecting' | 'Connected' | 'Disconnected' = 'Connected';
   sendMessage = vi.fn(async (_roomId: string, _text: string) => undefined);
@@ -17,6 +19,7 @@ class FakeHub {
   leaveRoom = vi.fn(async (_roomId: string) => undefined);
   start = vi.fn(async () => undefined);
   stop = vi.fn(async () => undefined);
+  heartbeat = vi.fn(async () => undefined);
   whenConnected = vi.fn(async () => {
     if (this.state === 'Connected') return;
     return new Promise<void>((resolve) => {
@@ -29,9 +32,18 @@ class FakeHub {
       this.handlers = this.handlers.filter((x) => x !== h);
     };
   });
+  onPresenceChanged = vi.fn((h: PresenceHandler) => {
+    this.presenceHandlers.push(h);
+    return () => {
+      this.presenceHandlers = this.presenceHandlers.filter((x) => x !== h);
+    };
+  });
   onReconnected = vi.fn(() => () => undefined);
   emit(message: MessageBroadcast) {
     for (const h of this.handlers) h(message);
+  }
+  emitPresence(payload: PresenceBroadcastPayload) {
+    for (const h of this.presenceHandlers) h(payload);
   }
   markConnected() {
     this.state = 'Connected';
@@ -127,6 +139,14 @@ describe('RoomPage', () => {
       if (url.includes(`/api/rooms/${ROOM_ID}/messages`)) {
         const seed = [buildMessage(1), buildMessage(2), buildMessage(3)];
         return jsonResponse(200, seed);
+      }
+      if (url.endsWith(`/api/rooms/${ROOM_ID}/members`) && method === 'GET') {
+        return jsonResponse(200, [
+          { userId: 'carol-id', username: 'carol', role: 'Owner' },
+          { userId: 'alice-id', username: 'alice', role: 'Admin' },
+          { userId: 'bob-id', username: 'bob', role: 'Member' },
+          { userId: 'dave-id', username: 'dave', role: 'Member' },
+        ]);
       }
       if (url.endsWith('/api/rooms/resync')) return jsonResponse(200, []);
       if (url.endsWith('/health')) return jsonResponse(200, { status: 'healthy', database: 'up', timestamp: '2026-04-19T00:00:00Z' });
@@ -249,6 +269,58 @@ describe('RoomPage', () => {
 
     await waitFor(() => {
       expect(localStorage.getItem(`hackaton.watermark.${ROOM_ID}`)).toBe('9');
+    });
+  });
+
+  test('MembersPanel renders fetched members sorted by role, then online-first, then alphabetical', async () => {
+    renderRoom();
+
+    await waitFor(() => {
+      expect(screen.getAllByTestId('member-row')).toHaveLength(4);
+    });
+
+    // Without any presence events, sort is: Owner first, Admin next, then Members alphabetically.
+    const rows = screen.getAllByTestId('member-row');
+    expect(rows[0]).toHaveAttribute('data-user-id', 'carol-id'); // Owner
+    expect(rows[1]).toHaveAttribute('data-user-id', 'alice-id'); // Admin
+    expect(rows[2]).toHaveAttribute('data-user-id', 'bob-id');   // Member, alphabetical
+    expect(rows[3]).toHaveAttribute('data-user-id', 'dave-id');  // Member, alphabetical
+
+    // Now make bob Online — within the Member group, online must come before offline.
+    act(() => {
+      fakeHub.emitPresence({ userId: 'bob-id', status: 'Online', at: '2026-04-19T00:00:00Z' });
+    });
+
+    await waitFor(() => {
+      const afterRows = screen.getAllByTestId('member-row');
+      expect(afterRows[2]).toHaveAttribute('data-user-id', 'bob-id');
+      expect(afterRows[3]).toHaveAttribute('data-user-id', 'dave-id');
+    });
+
+    // bob's row carries the Online badge.
+    const bobRow = screen.getAllByTestId('member-row').find((r) => r.getAttribute('data-user-id') === 'bob-id')!;
+    const badge = within(bobRow).getByTestId('presence-badge');
+    expect(badge).toHaveAttribute('data-presence', 'Online');
+  });
+
+  test('PresenceChanged updates the sender badge on rendered messages', async () => {
+    renderRoom();
+
+    await waitFor(() => expect(screen.getAllByTestId('message-row')).toHaveLength(3));
+
+    // Seeded messages all have senderId = 'sender'; no presence known yet → Offline glyph.
+    const firstRow = screen.getAllByTestId('message-row')[0];
+    const initialBadge = within(firstRow).getByTestId('presence-badge');
+    expect(initialBadge).toHaveAttribute('data-presence', 'Unknown');
+
+    act(() => {
+      fakeHub.emitPresence({ userId: 'sender', status: 'AFK', at: '2026-04-19T00:01:00Z' });
+    });
+
+    await waitFor(() => {
+      const firstRowAfter = screen.getAllByTestId('message-row')[0];
+      const badge = within(firstRowAfter).getByTestId('presence-badge');
+      expect(badge).toHaveAttribute('data-presence', 'AFK');
     });
   });
 });

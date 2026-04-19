@@ -13,7 +13,16 @@ export type MessageBroadcast = {
   sequenceInRoom: number | null;
 };
 
+export type PresenceStatus = 'Online' | 'AFK' | 'Offline';
+
+export type PresenceBroadcastPayload = {
+  userId: string;
+  status: PresenceStatus;
+  at: string;
+};
+
 type MessageHandler = (message: MessageBroadcast) => void;
+type PresenceHandler = (payload: PresenceBroadcastPayload) => void;
 
 /**
  * Typed wrapper around the SignalR HubConnection. Cookie-authenticated via `withCredentials`,
@@ -23,6 +32,7 @@ export class ChatHubClient {
   private readonly connection: HubConnection;
   private readonly handlers = new Set<MessageHandler>();
   private readonly reconnectHandlers = new Set<() => void>();
+  private readonly presenceHandlers = new Set<PresenceHandler>();
   private startPromise: Promise<void> | null = null;
 
   constructor() {
@@ -36,6 +46,10 @@ export class ChatHubClient {
 
     this.connection.on('MessageReceived', (message: MessageBroadcast) => {
       for (const h of this.handlers) h(message);
+    });
+
+    this.connection.on('PresenceChanged', (payload: PresenceBroadcastPayload) => {
+      for (const h of this.presenceHandlers) h(payload);
     });
 
     this.connection.onreconnected(() => {
@@ -89,9 +103,18 @@ export class ChatHubClient {
     );
   }
 
+  async heartbeat(): Promise<void> {
+    await this.connection.invoke('Heartbeat');
+  }
+
   onMessageReceived(handler: MessageHandler): () => void {
     this.handlers.add(handler);
     return () => this.handlers.delete(handler);
+  }
+
+  onPresenceChanged(handler: PresenceHandler): () => void {
+    this.presenceHandlers.add(handler);
+    return () => this.presenceHandlers.delete(handler);
   }
 
   onReconnected(handler: () => void): () => void {
