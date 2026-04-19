@@ -19,10 +19,29 @@ public class ChatHub(AppDbContext db, MessageQueue queue) : Hub
     private const string JoinedRoomsKey = "JoinedRooms";
     private const int MaxTextBytes = 3 * 1024;
 
-    public override Task OnConnectedAsync()
+    public override async Task OnConnectedAsync()
     {
-        Context.Items[JoinedRoomsKey] = new HashSet<Guid>();
-        return base.OnConnectedAsync();
+        // Server-authoritative reconciliation: SignalR group membership is rebuilt from the
+        // RoomMember table on every connect (including auto-reconnects). This closes the race
+        // between room creation (adds to DB only) and the client's explicit JoinRoom call
+        // (which adds to the SignalR group), and also restores group memberships after any
+        // disconnect/reconnect cycle. Excludes soft-deleted rooms.
+        var joined = new HashSet<Guid>();
+        Context.Items[JoinedRoomsKey] = joined;
+
+        var userId = CurrentUserId();
+        var memberRoomIds = await db.RoomMembers
+            .Where(m => m.UserId == userId && m.Room!.DeletedAt == null)
+            .Select(m => m.RoomId)
+            .ToListAsync(Context.ConnectionAborted);
+
+        foreach (var roomId in memberRoomIds)
+        {
+            await Groups.AddToGroupAsync(Context.ConnectionId, RoomGroup(roomId), Context.ConnectionAborted);
+            joined.Add(roomId);
+        }
+
+        await base.OnConnectedAsync();
     }
 
     public async Task JoinRoom(Guid roomId)

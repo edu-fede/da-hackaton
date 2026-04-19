@@ -171,19 +171,57 @@ public class ChatHubTests(ApiFactory factory) : IClassFixture<ApiFactory>
     }
 
     [Fact]
-    public async Task SendMessage_without_prior_JoinRoom_throws_HubException()
+    public async Task SendMessage_from_non_member_throws_HubException()
     {
+        // Post-fix: members auto-join on OnConnectedAsync so a sender that IS a member can
+        // send immediately. This test covers the inverse: a stranger connecting to the Hub
+        // and trying to send to a room they were never added to.
         var ct = TestContext.Current.CancellationToken;
-        var (ownerHttp, ownerCookie, _) = await AuthenticatedClientAsync(ct);
+        var (ownerHttp, _, _) = await AuthenticatedClientAsync(ct);
+        var (_, strangerCookie, _) = await AuthenticatedClientAsync(ct);
         var roomId = await CreateRoomAndAddMemberAsync(ownerHttp, joinerId: null, ct);
 
-        await using var sender = BuildHubConnection(ownerCookie);
+        await using var sender = BuildHubConnection(strangerCookie);
         await sender.StartAsync(ct);
 
         var act = async () => await sender.InvokeAsync<MessageBroadcast>(
             "SendMessage", roomId, "hello", (Guid?)null, ct);
         await act.Should().ThrowAsync<Exception>()
             .Where(e => e.Message.Contains("join", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task OnConnected_auto_joins_member_rooms_so_owner_can_send_without_explicit_JoinRoom()
+    {
+        // Regression for the bug found in Story 1.14 manual smoke: an owner of a newly-created
+        // room is in RoomMember in the DB but was never added to the SignalR group because the
+        // client-side JoinRoom call races with the user's first SendMessage. Fix: OnConnectedAsync
+        // reconciles SignalR groups with the authoritative DB membership. This test covers both
+        // sides: the owner can send without calling JoinRoom, AND an existing member receives the
+        // broadcast despite NEVER having called JoinRoom either.
+        var ct = TestContext.Current.CancellationToken;
+        var (ownerHttp, ownerCookie, _) = await AuthenticatedClientAsync(ct);
+        var (_, receiverCookie, receiverId) = await AuthenticatedClientAsync(ct);
+        var roomId = await CreateRoomAndAddMemberAsync(ownerHttp, receiverId, ct);
+
+        await using var receiver = BuildHubConnection(receiverCookie);
+        var received = new TaskCompletionSource<MessageBroadcast>();
+        receiver.On<MessageBroadcast>("MessageReceived", m => received.TrySetResult(m));
+        await receiver.StartAsync(ct);
+
+        await using var sender = BuildHubConnection(ownerCookie);
+        await sender.StartAsync(ct);
+
+        // No explicit JoinRoom on either side — both must have been auto-joined on connect.
+        var ack = await sender.InvokeAsync<MessageBroadcast>(
+            "SendMessage", roomId, "first message from owner", (Guid?)null, ct);
+
+        ack.Text.Should().Be("first message from owner");
+        ack.RoomId.Should().Be(roomId);
+
+        var broadcast = await received.Task.WaitAsync(TimeSpan.FromSeconds(5), ct);
+        broadcast.Id.Should().Be(ack.Id);
+        broadcast.Text.Should().Be("first message from owner");
     }
 
     [Fact]
