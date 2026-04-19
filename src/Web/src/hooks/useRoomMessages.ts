@@ -94,6 +94,10 @@ export function useRoomMessages(roomId: string | undefined): UseRoomMessagesResu
         // only adds the connection to the SignalR group and requires an existing RoomMember row.
         await api.post(`/api/rooms/${roomId}/join`);
         if (cancelled) return;
+        // On F5 the SignalRProvider is still handshaking when this effect fires; invoking
+        // on a non-Connected HubConnection throws. Wait for the shared start promise.
+        await hub.whenConnected();
+        if (cancelled) return;
         await hub.joinRoom(roomId);
         if (!cancelled) joinedRef.current = roomId;
       } catch (err) {

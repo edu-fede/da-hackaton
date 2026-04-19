@@ -10,11 +10,19 @@ type MessageReceivedHandler = (m: MessageBroadcast) => void;
 
 class FakeHub {
   private handlers: MessageReceivedHandler[] = [];
+  private connectedResolvers: Array<() => void> = [];
+  state: 'Connecting' | 'Connected' | 'Disconnected' = 'Connected';
   sendMessage = vi.fn(async (_roomId: string, _text: string) => undefined);
   joinRoom = vi.fn(async (_roomId: string) => undefined);
   leaveRoom = vi.fn(async (_roomId: string) => undefined);
   start = vi.fn(async () => undefined);
   stop = vi.fn(async () => undefined);
+  whenConnected = vi.fn(async () => {
+    if (this.state === 'Connected') return;
+    return new Promise<void>((resolve) => {
+      this.connectedResolvers.push(resolve);
+    });
+  });
   onMessageReceived = vi.fn((h: MessageReceivedHandler) => {
     this.handlers.push(h);
     return () => {
@@ -24,6 +32,12 @@ class FakeHub {
   onReconnected = vi.fn(() => () => undefined);
   emit(message: MessageBroadcast) {
     for (const h of this.handlers) h(message);
+  }
+  markConnected() {
+    this.state = 'Connected';
+    const toResolve = this.connectedResolvers;
+    this.connectedResolvers = [];
+    for (const r of toResolve) r();
   }
 }
 
@@ -172,6 +186,30 @@ describe('RoomPage', () => {
 
     await waitFor(() => expect(screen.getAllByTestId('message-row')).toHaveLength(4));
     expect(screen.getByText('live broadcast')).toBeInTheDocument();
+  });
+
+  test('waits for SignalR Connected state before invoking hub.joinRoom on mount', async () => {
+    fakeHub.state = 'Connecting';
+    renderRoom();
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringContaining(`/api/rooms/${ROOM_ID}/join`),
+        expect.objectContaining({ method: 'POST' }),
+      );
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(fakeHub.joinRoom).not.toHaveBeenCalled();
+
+    await act(async () => {
+      fakeHub.markConnected();
+    });
+
+    await waitFor(() => expect(fakeHub.joinRoom).toHaveBeenCalledWith(ROOM_ID));
+    expect(fakeHub.joinRoom).toHaveBeenCalledTimes(1);
   });
 
   test('invokes REST /join before hub.joinRoom on mount', async () => {

@@ -23,6 +23,7 @@ export class ChatHubClient {
   private readonly connection: HubConnection;
   private readonly handlers = new Set<MessageHandler>();
   private readonly reconnectHandlers = new Set<() => void>();
+  private startPromise: Promise<void> | null = null;
 
   constructor() {
     this.connection = new HubConnectionBuilder()
@@ -43,13 +44,28 @@ export class ChatHubClient {
   }
 
   async start(): Promise<void> {
-    if (this.connection.state === 'Disconnected') {
-      await this.connection.start();
-    }
+    if (this.connection.state === 'Connected') return;
+    if (this.startPromise) return this.startPromise;
+    const p = this.connection.start();
+    p.catch(() => {
+      this.startPromise = null;
+    });
+    this.startPromise = p;
+    return p;
   }
 
   async stop(): Promise<void> {
+    this.startPromise = null;
     await this.connection.stop();
+  }
+
+  async whenConnected(): Promise<void> {
+    if (this.connection.state === 'Connected') return;
+    if (this.startPromise) {
+      await this.startPromise;
+      return;
+    }
+    await this.start();
   }
 
   async joinRoom(roomId: string): Promise<void> {
