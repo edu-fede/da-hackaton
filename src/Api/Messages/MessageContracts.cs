@@ -27,3 +27,17 @@ public sealed record MessageBroadcast(
     DateTimeOffset CreatedAt,
     Guid? ReplyToMessageId,
     int? SequenceInRoom);
+
+/// <summary>Client-supplied watermark: "for this room, I have seen up to sequence <see cref="LastSeq"/>".</summary>
+public sealed record WatermarkEntry(Guid RoomId, int LastSeq);
+
+/// <summary>
+/// One entry in the resync response, corresponding to one input <see cref="WatermarkEntry"/>.
+/// If <see cref="NotAMember"/> is true, the caller should discard its local watermark for that room.
+/// Otherwise <see cref="Messages"/> carries the missing tail (sequence &gt; LastSeq) in ascending order,
+/// capped server-side.
+/// </summary>
+public sealed record ResyncRoomResult(
+    Guid RoomId,
+    bool NotAMember,
+    IReadOnlyList<MessageEntry>? Messages);

@@ -310,15 +310,17 @@ As the system, I need the slow path to durably record every message with a monot
 As a reconnecting client, I want to fetch only the messages I missed per room, avoiding an offline per-user mailbox (Architecture Constraint §3).
 
 **Acceptance Criteria:**
-- [ ] Endpoint accepts a batch of `{roomId, lastSeq}` tuples.
-- [ ] For each room the caller is still a member of, returns messages with `SequenceInRoom > lastSeq`, ordered ascending, capped (e.g., 500).
-- [ ] Rooms where the caller is no longer a member return `{roomId, notAMember: true}` so the client discards that entry.
-- [ ] Test: client with stale watermark receives exactly the missing tail.
+- [x] Endpoint accepts a batch of `{roomId, lastSeq}` tuples.
+- [x] For each room the caller is still a member of, returns messages with `SequenceInRoom > lastSeq`, ordered ascending, capped (e.g., 500).
+- [x] Rooms where the caller is no longer a member return `{roomId, notAMember: true}` so the client discards that entry.
+- [x] Test: client with stale watermark receives exactly the missing tail.
 
 **Priority:** High
 **Labels:** api, testing
 **Story Points:** 2
 **Traces to:** FR-42 (Architecture Constraint §3)
+
+**Status:** Done (commit pending)
 
 ---
 

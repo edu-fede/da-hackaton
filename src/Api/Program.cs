@@ -76,6 +76,7 @@ app.UseAuthorization();
 app.MapAuthEndpoints();
 app.MapRoomEndpoints();
 app.MapMessageEndpoints();
+app.MapResyncEndpoint();
 app.MapHub<ChatHub>("/hubs/chat");
 
 app.MapGet("/api/me", (ClaimsPrincipal user) => Results.Ok(new
