@@ -254,7 +254,7 @@ As the chat, I need persistent, ordered, efficiently paginated messages so infin
 **Story Points:** 3
 **Traces to:** FR-41, FR-42, NFR-6, NFR-7
 
-**Status:** Done (commit pending)
+**Status:** Done (commit `40a579e`)
 
 ---
 
