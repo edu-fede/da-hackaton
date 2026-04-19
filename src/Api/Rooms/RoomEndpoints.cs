@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using Hackaton.Api.Data;
+using Hackaton.Api.Presence;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -205,6 +206,7 @@ public static class RoomEndpoints
     private static async Task<IResult> GetMembers(
         Guid id,
         AppDbContext db,
+        PresenceTracker presence,
         HttpContext http,
         CancellationToken ct)
     {
@@ -230,13 +232,16 @@ public static class RoomEndpoints
 
         // Full roster — acceptable for MVP. For rooms approaching NFR-2's 1000-member cap
         // pagination would be required (cursor on (Role, Username) with a server page size).
-        var members = await db.RoomMembers
+        // Status is composed from the in-memory PresenceTracker — members absent from the
+        // tracker's dict are Offline by the tracker's invariant.
+        var rows = await db.RoomMembers
             .Where(m => m.RoomId == id)
-            .Select(m => new RoomMemberEntry(
-                m.UserId,
-                m.User!.Username,
-                m.Role))
+            .Select(m => new { m.UserId, Username = m.User!.Username, m.Role })
             .ToListAsync(ct);
+
+        var members = rows
+            .Select(r => new RoomMemberEntry(r.UserId, r.Username, r.Role, presence.GetStatus(r.UserId)))
+            .ToList();
 
         return Results.Ok(members);
     }

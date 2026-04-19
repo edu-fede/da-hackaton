@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { api } from '../api/client';
-import { usePresenceMap } from '../signalr/SignalRProvider';
+import { usePresenceMap, useSeedPresence } from '../signalr/SignalRProvider';
 import type { PresenceStatus } from '../signalr/ChatHubClient';
 import { PresenceBadge } from './PresenceBadge';
 
@@ -10,6 +10,7 @@ type RoomMemberEntry = {
   userId: string;
   username: string;
   role: RoomRole;
+  status: PresenceStatus;
 };
 
 const ROLE_ORDER: Record<RoomRole, number> = {
@@ -28,6 +29,7 @@ export function MembersPanel({ roomId }: { roomId: string }) {
   const [members, setMembers] = useState<RoomMemberEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const presence = usePresenceMap();
+  const seedPresence = useSeedPresence();
 
   useEffect(() => {
     let cancelled = false;
@@ -36,7 +38,12 @@ export function MembersPanel({ roomId }: { roomId: string }) {
     (async () => {
       try {
         const list = await api.get<RoomMemberEntry[]>(`/api/rooms/${roomId}/members`);
-        if (!cancelled) setMembers(list);
+        if (cancelled) return;
+        setMembers(list);
+        // Seed the shared presence map so badges render the server-side snapshot
+        // immediately — without this we only saw users who transitioned AFTER we connected.
+        const nowIso = new Date().toISOString();
+        seedPresence(list.map((m) => ({ userId: m.userId, status: m.status, at: nowIso })));
       } catch (err) {
         if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to load members.');
       }
@@ -44,7 +51,7 @@ export function MembersPanel({ roomId }: { roomId: string }) {
     return () => {
       cancelled = true;
     };
-  }, [roomId]);
+  }, [roomId, seedPresence]);
 
   const sorted = useMemo(() => {
     if (!members) return null;

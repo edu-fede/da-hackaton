@@ -3,6 +3,7 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using FluentAssertions;
 using Hackaton.Api.Data;
+using Hackaton.Api.Presence;
 using Hackaton.Api.Tests.Fixtures;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -362,10 +363,79 @@ public class RoomEndpointsTests(ApiFactory factory) : IClassFixture<ApiFactory>
         var ownerRow = rows.Single(r => r.GetProperty("userId").GetGuid() == ownerId);
         ownerRow.GetProperty("role").GetString().Should().Be("Owner");
         ownerRow.GetProperty("username").GetString().Should().NotBeNullOrEmpty();
+        ownerRow.TryGetProperty("status", out _).Should().BeTrue();
 
         var joinerRow = rows.Single(r => r.GetProperty("userId").GetGuid() == joinerId);
         joinerRow.GetProperty("role").GetString().Should().Be("Member");
         joinerRow.GetProperty("username").GetString().Should().NotBeNullOrEmpty();
+        joinerRow.TryGetProperty("status", out _).Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Members_includes_status_from_presence_tracker()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var owner = await AuthenticatedClientAsync(ct);
+        var ownerId = await CurrentUserIdAsync(owner, ct);
+        var joiner = await AuthenticatedClientAsync(ct);
+        var joinerId = await CurrentUserIdAsync(joiner, ct);
+
+        var created = await owner.PostAsJsonAsync("/api/rooms", new { name = UniqueRoomName("memst"), description = "", visibility = "Public" }, ct);
+        var roomId = (await created.Content.ReadFromJsonAsync<JsonElement>(ct)).GetProperty("id").GetGuid();
+        (await joiner.PostAsync($"/api/rooms/{roomId}/join", null, ct)).StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        var tracker = _factory.Services.GetRequiredService<PresenceTracker>();
+        var connId = $"conn-{Guid.NewGuid():N}";
+        tracker.TrackConnection(joinerId, connId, new[] { roomId }, DateTimeOffset.UtcNow);
+
+        try
+        {
+            var response = await owner.GetAsync($"/api/rooms/{roomId}/members", ct);
+
+            response.StatusCode.Should().Be(HttpStatusCode.OK);
+            var body = await response.Content.ReadFromJsonAsync<JsonElement>(ct);
+            var rows = body.EnumerateArray().ToList();
+
+            var ownerRow = rows.Single(r => r.GetProperty("userId").GetGuid() == ownerId);
+            ownerRow.GetProperty("status").GetString().Should().Be("Offline");
+
+            var joinerRow = rows.Single(r => r.GetProperty("userId").GetGuid() == joinerId);
+            joinerRow.GetProperty("status").GetString().Should().Be("Online");
+        }
+        finally
+        {
+            // Singleton tracker is shared across tests — clear this test's entry so it
+            // doesn't leak. Subsequent tests use fresh user IDs anyway, but clean is clean.
+            tracker.RemoveConnection(joinerId, connId, DateTimeOffset.UtcNow);
+        }
+    }
+
+    [Fact]
+    public async Task Members_returns_Offline_when_users_not_in_presence_tracker()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var owner = await AuthenticatedClientAsync(ct);
+        var ownerId = await CurrentUserIdAsync(owner, ct);
+        var joiner = await AuthenticatedClientAsync(ct);
+        var joinerId = await CurrentUserIdAsync(joiner, ct);
+
+        var created = await owner.PostAsJsonAsync("/api/rooms", new { name = UniqueRoomName("memoff"), description = "", visibility = "Public" }, ct);
+        var roomId = (await created.Content.ReadFromJsonAsync<JsonElement>(ct)).GetProperty("id").GetGuid();
+        (await joiner.PostAsync($"/api/rooms/{roomId}/join", null, ct)).StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        // Ensure the tracker has no record of either user (singleton may hold state from other tests).
+        var tracker = _factory.Services.GetRequiredService<PresenceTracker>();
+        tracker.RemoveConnection(ownerId, "", DateTimeOffset.UtcNow);
+        tracker.RemoveConnection(joinerId, "", DateTimeOffset.UtcNow);
+
+        var response = await owner.GetAsync($"/api/rooms/{roomId}/members", ct);
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>(ct);
+        var rows = body.EnumerateArray().ToList();
+        rows.Should().HaveCount(2);
+        rows.Single(r => r.GetProperty("userId").GetGuid() == ownerId).GetProperty("status").GetString().Should().Be("Offline");
+        rows.Single(r => r.GetProperty("userId").GetGuid() == joinerId).GetProperty("status").GetString().Should().Be("Offline");
     }
 
     [Fact]

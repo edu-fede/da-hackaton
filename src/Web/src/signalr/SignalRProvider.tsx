@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useMemo, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import { ChatHubClient } from './ChatHubClient';
 import type { PresenceStatus } from './ChatHubClient';
@@ -15,14 +15,22 @@ type ResyncResult = {
 
 export type PresenceInfo = { status: PresenceStatus; at: string };
 
+export type PresenceSeedEntry = { userId: string; status: PresenceStatus; at: string };
+
 type SignalRContextValue = {
   hub: ChatHubClient | null;
   presence: ReadonlyMap<string, PresenceInfo>;
+  seedPresence: (entries: PresenceSeedEntry[]) => void;
 };
 
 const emptyPresence: ReadonlyMap<string, PresenceInfo> = new Map();
+const noopSeed = (_entries: PresenceSeedEntry[]) => undefined;
 
-const SignalRContext = createContext<SignalRContextValue>({ hub: null, presence: emptyPresence });
+const SignalRContext = createContext<SignalRContextValue>({
+  hub: null,
+  presence: emptyPresence,
+  seedPresence: noopSeed,
+});
 
 const watermarkKeyPrefix = 'hackaton.watermark.';
 
@@ -57,6 +65,10 @@ export function usePresence(userId: string | undefined | null): PresenceStatus |
 
 export function usePresenceMap(): ReadonlyMap<string, PresenceInfo> {
   return useContext(SignalRContext).presence;
+}
+
+export function useSeedPresence(): (entries: PresenceSeedEntry[]) => void {
+  return useContext(SignalRContext).seedPresence;
 }
 
 export function SignalRProvider({
@@ -108,7 +120,24 @@ export function SignalRProvider({
 
   useHeartbeat(hub);
 
-  const contextValue = useMemo(() => ({ hub, presence }), [hub, presence]);
+  const seedPresence = useCallback((entries: PresenceSeedEntry[]) => {
+    setPresence((prev) => {
+      const next = new Map(prev);
+      for (const e of entries) {
+        if (e.status === 'Offline') {
+          next.delete(e.userId);
+        } else {
+          next.set(e.userId, { status: e.status, at: e.at });
+        }
+      }
+      return next;
+    });
+  }, []);
+
+  const contextValue = useMemo(
+    () => ({ hub, presence, seedPresence }),
+    [hub, presence, seedPresence],
+  );
   return <SignalRContext.Provider value={contextValue}>{children}</SignalRContext.Provider>;
 }
 

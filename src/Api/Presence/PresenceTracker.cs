@@ -132,6 +132,18 @@ public sealed class PresenceTracker
         return transitions;
     }
 
+    public PresenceStatus GetStatus(Guid userId)
+    {
+        if (!_users.TryGetValue(userId, out var info))
+        {
+            return PresenceStatus.Offline;
+        }
+        lock (info.Sync)
+        {
+            return info.Status;
+        }
+    }
+
     public void AddRoom(Guid userId, Guid roomId)
     {
         if (!_users.TryGetValue(userId, out var info))

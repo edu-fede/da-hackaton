@@ -1,4 +1,5 @@
 using Hackaton.Api.Data;
+using Hackaton.Api.Presence;
 
 namespace Hackaton.Api.Rooms;
 
@@ -29,4 +30,5 @@ public sealed record MyRoomEntry(
 public sealed record RoomMemberEntry(
     Guid UserId,
     string Username,
-    RoomRole Role);
+    RoomRole Role,
+    PresenceStatus Status);

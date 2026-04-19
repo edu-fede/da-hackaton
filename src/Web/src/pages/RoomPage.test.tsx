@@ -142,10 +142,10 @@ describe('RoomPage', () => {
       }
       if (url.endsWith(`/api/rooms/${ROOM_ID}/members`) && method === 'GET') {
         return jsonResponse(200, [
-          { userId: 'carol-id', username: 'carol', role: 'Owner' },
-          { userId: 'alice-id', username: 'alice', role: 'Admin' },
-          { userId: 'bob-id', username: 'bob', role: 'Member' },
-          { userId: 'dave-id', username: 'dave', role: 'Member' },
+          { userId: 'carol-id', username: 'carol', role: 'Owner', status: 'Online' },
+          { userId: 'alice-id', username: 'alice', role: 'Admin', status: 'Offline' },
+          { userId: 'bob-id', username: 'bob', role: 'Member', status: 'Online' },
+          { userId: 'dave-id', username: 'dave', role: 'Member', status: 'Offline' },
         ]);
       }
       if (url.endsWith('/api/rooms/resync')) return jsonResponse(200, []);
@@ -279,16 +279,20 @@ describe('RoomPage', () => {
       expect(screen.getAllByTestId('member-row')).toHaveLength(4);
     });
 
-    // Without any presence events, sort is: Owner first, Admin next, then Members alphabetically.
+    // Seeded statuses (from the /members mock):
+    //   carol: Owner, Online     alice: Admin, Offline
+    //   bob:   Member, Online    dave:  Member, Offline
+    // Sort = role, then online-first, then alphabetical. Expected: carol, alice, bob, dave.
     const rows = screen.getAllByTestId('member-row');
-    expect(rows[0]).toHaveAttribute('data-user-id', 'carol-id'); // Owner
-    expect(rows[1]).toHaveAttribute('data-user-id', 'alice-id'); // Admin
-    expect(rows[2]).toHaveAttribute('data-user-id', 'bob-id');   // Member, alphabetical
-    expect(rows[3]).toHaveAttribute('data-user-id', 'dave-id');  // Member, alphabetical
+    expect(rows[0]).toHaveAttribute('data-user-id', 'carol-id');
+    expect(rows[1]).toHaveAttribute('data-user-id', 'alice-id');
+    expect(rows[2]).toHaveAttribute('data-user-id', 'bob-id');
+    expect(rows[3]).toHaveAttribute('data-user-id', 'dave-id');
 
-    // Now make bob Online — within the Member group, online must come before offline.
+    // Flip dave to Online — within the Member group, Online must now come before Offline,
+    // and alphabetical is the third-rank tiebreaker between bob (Online) and dave (Online).
     act(() => {
-      fakeHub.emitPresence({ userId: 'bob-id', status: 'Online', at: '2026-04-19T00:00:00Z' });
+      fakeHub.emitPresence({ userId: 'dave-id', status: 'Online', at: '2026-04-19T00:00:00Z' });
     });
 
     await waitFor(() => {
@@ -297,10 +301,32 @@ describe('RoomPage', () => {
       expect(afterRows[3]).toHaveAttribute('data-user-id', 'dave-id');
     });
 
-    // bob's row carries the Online badge.
-    const bobRow = screen.getAllByTestId('member-row').find((r) => r.getAttribute('data-user-id') === 'bob-id')!;
-    const badge = within(bobRow).getByTestId('presence-badge');
-    expect(badge).toHaveAttribute('data-presence', 'Online');
+    const daveRow = screen.getAllByTestId('member-row').find((r) => r.getAttribute('data-user-id') === 'dave-id')!;
+    expect(within(daveRow).getByTestId('presence-badge')).toHaveAttribute('data-presence', 'Online');
+  });
+
+  test('MembersPanel seeds badges from API status before any PresenceChanged event', async () => {
+    renderRoom();
+
+    await waitFor(() => expect(screen.getAllByTestId('member-row')).toHaveLength(4));
+
+    // No fakeHub.emitPresence has fired yet. Badges must reflect the /members snapshot.
+    const bobRow = screen
+      .getAllByTestId('member-row')
+      .find((r) => r.getAttribute('data-user-id') === 'bob-id')!;
+    expect(within(bobRow).getByTestId('presence-badge')).toHaveAttribute('data-presence', 'Online');
+
+    const carolRow = screen
+      .getAllByTestId('member-row')
+      .find((r) => r.getAttribute('data-user-id') === 'carol-id')!;
+    expect(within(carolRow).getByTestId('presence-badge')).toHaveAttribute('data-presence', 'Online');
+
+    // Offline members aren't written into the shared map (invariant: map holds Online/AFK only),
+    // so their badge falls through to the 'Unknown' branch, which renders the same ○ glyph.
+    const aliceRow = screen
+      .getAllByTestId('member-row')
+      .find((r) => r.getAttribute('data-user-id') === 'alice-id')!;
+    expect(within(aliceRow).getByTestId('presence-badge')).toHaveAttribute('data-presence', 'Unknown');
   });
 
   test('PresenceChanged updates the sender badge on rendered messages', async () => {
