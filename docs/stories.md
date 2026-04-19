@@ -231,7 +231,7 @@ As a user, I want to see and interact with rooms in the sidebar per Appendix A l
 **Story Points:** 3
 **Traces to:** FR-22, FR-24, FR-49, FR-50
 
-**Status:** Done (commit pending)
+**Status:** Done (commit `08f6626`)
 
 ---
 
