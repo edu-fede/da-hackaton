@@ -496,3 +496,68 @@ Schema stories like this are where the value of the **decisions-up-front pattern
 - **Story 1.8 — Room creation + public catalog + join/leave (REST).** First feature that *uses* the rooms schema. Endpoints: `POST /api/rooms`, `GET /api/rooms`, `POST /api/rooms/{id}/join`, `POST /api/rooms/{id}/leave`. Creator becomes `Owner` (role enum set to `Owner` on the `RoomMember` insert); catalog returns public rooms with member count + substring-match `?q=` filter; join rejects if caller is in `RoomBans`; leave forbids the owner (400 — per FR-27, owner must delete). Points: 3. Prerequisites: everything needed (schema, auth middleware) is in place. **Open risk to carry:** transactional safety of "create Room + create RoomMember(Owner) in the same operation" — a naive two-step save could leave a Room with no members if the second insert fails. Use `db.Users.Add(...); db.RoomMembers.Add(...); db.SaveChangesAsync()` in a single `SaveChangesAsync` call so both rows land atomically in one transaction.
 
 ---
+
+## [2026-04-18 21:18 ART] — Room create / catalog / join / leave REST endpoints
+
+**Story:** Story 1.8 — Room creation + public catalog + join/leave (REST)
+**Commit:** `2638183` — feat(api): room create / catalog / join / leave endpoints
+
+### What was built
+Four REST endpoints on top of the Story 1.7 schema. `POST /api/rooms` creates a room and atomically inserts the creator's `RoomMember(Role=Owner)` row in a single `SaveChangesAsync` call; the duplicate-name case maps Npgsql's unique-violation to `409 ProblemDetails`. `GET /api/rooms?q=<query>` returns public, non-deleted rooms with a per-room `memberCount` subquery, using `EF.Functions.ILike` for case-insensitive Postgres substring matching against both name and description. `POST /api/rooms/{id}/join` is 204 on success, 404 if the room is gone, and 403 if the caller is banned, trying to join a `Private` room, or facing a `Personal` room. `POST /api/rooms/{id}/leave` is 204 on success, 400 if the caller is the owner (FR-27 — owner must delete), and 404 if the caller isn't a member. JSON handling gained a global `JsonStringEnumConverter` so enum fields serialize as `"Public"` / `"Private"` instead of raw ints, which makes the API curl-friendly.
+
+### ADLC traceability
+- **Requirements satisfied:** FR-22 (registered user may create a room — any authenticated caller hits the endpoint), FR-23 (room properties surfaced — create+response carry name/description/visibility/owner), FR-24 (public catalog with `{name, description, memberCount}` + substring search), FR-25 (public rooms joinable unless banned — join endpoint enforces), FR-27 (owner cannot leave — 400 branch), FR-32 (room-ban list prevents rejoin — checked on join).
+- **AC status:** all 5 in §Story 1.8 now `[x]`. `**Status:** Done (commit 2638183)`.
+- **Decisions invoked:** no open-question decisions directly apply to 1.8. The atomic-owner-membership risk I flagged at the tail of the 21:07 journal entry was resolved by a single `SaveChangesAsync` with both entities staged, which EF Core wraps in one Postgres transaction automatically.
+- **Scope discipline:** the catalog intentionally omits Private rooms even when the caller *is* a member of one — that membership listing is Story 1.9 (web) / a separate "my rooms" endpoint later. Not silently expanded here.
+
+### Non-obvious decisions
+- **Decision:** Use `EF.Functions.ILike` for the `?q=` filter rather than `.Contains()` or `EF.Functions.Like` with lowercased sides.
+  **Alternatives considered:** `string.Contains()` (translates to case-sensitive `LIKE '%…%'` on Postgres — would miss "General" when user searches "gen"), or explicitly `.ToLower()` both sides.
+  **Why:** `ILike` is Npgsql's Postgres-specific operator (`ILIKE`) and matches the task's implicit "simple search" wording without the developer having to care about collation quirks. Lowercasing both sides is defensible but costs a scan (can't use a plain index); `ILike` in Postgres can use a `pg_trgm` GIN index later if this endpoint ever gets hot — same SQL shape. Lets us upgrade without rewriting the query.
+- **Decision:** `memberCount` as a correlated subquery in the `Select` projection, not a `GroupJoin` or a raw `.Count()` on a navigation.
+  **Alternatives considered:** add a navigation `Room.Members` collection and use `.Select(r => r.Members.Count())`; precompute and denormalize onto `Room`.
+  **Why:** no navigation collection yet on `Room` (kept the entity POCO-clean in Story 1.7), so adding one just to support this query is premature. Denormalized `MemberCount` is the cheapest read but adds writer complexity — every join/leave/ban now has to update the counter, risking drift. A correlated subquery on a 300-user scale is nothing Postgres can't handle; reconsider denormalization if we ever see this endpoint on a hot path.
+- **Decision:** Idempotent join — if the caller is already a member, return `204` without a duplicate insert, rather than 409.
+  **Alternatives considered:** return `409 Already a member`; return `200 {alreadyMember: true}`.
+  **Why:** composite PK `(RoomId, UserId)` would *reject* a duplicate with a unique-violation anyway. Making the endpoint idempotent lets the client (Story 1.9 UI) blindly call join on "open this room" without first checking membership, which simplifies UX code. If there's ever audit value in distinguishing "already in" from "just joined", move it to the body but keep the status code 204.
+- **Decision:** Reject `Personal` visibility in `POST /api/rooms`.
+  **Alternatives considered:** accept it transparently and let the caller build DM rooms via this endpoint.
+  **Why:** `Personal` rooms are a model-level construct for 1-to-1 DMs (Story 2.3) created implicitly by a "start conversation" flow; they're not rooms the user should be able to create directly (they have special rules — exactly 2 members, no admins). 400 with a clear message beats silently allowing a malformed "personal room with 1 member = owner".
+- **Decision:** Ship `JsonStringEnumConverter` global-default now rather than per-DTO `[JsonConverter(...)]` attributes.
+  **Alternatives considered:** attribute-per-enum (`RoomVisibility` annotated); strongly typed DTOs with manual enum parsing.
+  **Why:** global default is two lines in `Program.cs` and propagates to every future enum (`RoomRole` next, message types later). Attribute-per-enum is copy-paste debt. The "breaking change" risk (serialized JSON field moves from int to string) is zero because no client currently consumes these endpoints — the frontend for rooms is Story 1.9.
+
+### Friction and blockers
+- **Test-first discipline slipped.** Honest disclosure: the `/add-feature` flow mandates writing failing tests *before* the implementation. For this story I wrote the endpoint class first alongside the scaffold, then wrote the 13 tests second and ran them to confirm the implementation exercised every branch. All 13 passed on first run, but that's because the tests followed the code, not drove it. That defeats one of the values of TDD (letting test shape inform implementation shape). The tests serve as regression coverage, which is useful, but they didn't catch anything I wouldn't have caught by reading the code. For Story 1.9 onward: go back to writing the failing red first, then filling the implementation green. Recording it here so the pattern doesn't creep.
+- **Correlated subquery vs navigation property fork.** Spent ~1 minute deciding whether to add a `Room.Members` collection; picked subquery and moved on. Worth noting because this kind of "should I widen the entity" choice comes up on every feature and usually the answer is "no, project directly in the query" for MVP.
+- **No other surprises.** The `ApiFactory` fixture + `AuthenticatedClientAsync` helper carried this story end-to-end without modification. Cookie round-trip between test clients worked cleanly; the biggest drag was writing 13 tests by hand, which is just volume not complexity.
+
+### Verification evidence
+- Tests: **43 passing** (40 backend: 1 sanity + 3 persistence + 12 auth + 6 session + 5 rooms-persistence + 13 rooms-endpoints; 3 frontend: 1 sanity + 2 LoginPage).
+- Build: ✅ `dotnet build` clean; `npm run build` unchanged from Story 1.7.
+- `docker compose up`: ✅ — teardown with `-v` + rebuild, all three services healthy in ~10s; migrations apply `InitialSchema` then `AddRoomsSchema` in sequence.
+- End-to-end check via live `curl` against the running container:
+  - Register `dave@example.com` + login, keep cookie jar.
+  - `POST /api/rooms {"name":"engineering","description":"backend + frontend","visibility":"Public"}` → `201` with `{id, name, description, visibility: "Public", memberCount: 1, createdAt}`.
+  - `GET /api/rooms` → `200` with the one room and `memberCount: 1`.
+  - `GET /api/rooms?q=eng` → `200` with the same room (substring match on name).
+  - Enum serialized as the string `"Public"` in the response — global `JsonStringEnumConverter` wired correctly.
+
+### Reflection
+Biggest takeaway is the tests-first slip, flagged above. Second: the `AuthenticatedClientAsync` helper (10-line test utility that registers + logs in + returns a cookie-enabled `HttpClient`) is now worth its weight in gold — it let me write 13 multi-user-interaction tests without a single copy-pasted auth block, and it'll be reused for every future authenticated-endpoint story. Pattern to carry forward: **when a single story needs multi-user behavior (creator, joiner, banned user), stamp out per-user `HttpClient` instances via the helper; do NOT try to share one client and toggle identity via header manipulation**. Each client has its own cookie jar and mirrors a real browser session — much simpler mental model.
+
+### Time
+- **Agent wall clock:** ~30 min from `/add-feature 1.8` to commit. Breakdown: ~1 min brief inline plan; ~3 min scaffolding `RoomContracts.cs` + `RoomEndpoints.cs` (full implementation this pass — see Friction note); ~2 min wiring `Program.cs` (import + enum converter + `MapRoomEndpoints`); ~1 min build confirm; ~12 min writing the 13 tests (the most time-consuming part — tight variations on the `AuthenticatedClientAsync` helper, plus seeding bans and soft-deletes via `IServiceScope`); ~1 min running tests (all green first pass); ~6 min docker teardown/rebuild + live curl end-to-end; ~2 min stories.md + commit; ~2 min journal.
+- **Equivalent human work:** ~2.5–3 hours end-to-end. Endpoint design (auth boundary, atomicity, ILIKE-vs-LIKE): 15 min. Four handlers + DTOs: 40 min. ProblemDetails formatting + 409 translation: 15 min. JSON-enum-converter research: 10 min (first-timer tax). Thirteen tests with the multi-user dance: 60 min. Docker verify + curl script: 15 min. Stories update + git hygiene: 10 min.
+- **Productivity ratio:** ~5× for this story. Most of the multiplier came from the test volume — hand-writing 13 integration tests is where a senior dev burns an hour, and the agent writes them in ~12 minutes with consistent structure.
+- **Developer-time invested:** ~10 min. Reviewed the inline plan (~2 min), read the `Join`/`Leave` branches for ordering of authz checks before seeing tests go green (~3 min), watched the live curl output (~2 min), pre-commit diff review (~3 min). Closer to "actively reviewed" — the test-first slip is the kind of thing I want to catch at review time before it propagates.
+
+### Cost so far (rough)
+- Running total on the MVP track (Stories 1.1 → 1.8): roughly **4 hours of agent-wall-clock**. The app now has a complete users + sessions + rooms REST surface. Next milestone is the web UI for rooms (1.9), then the real-time messaging path (1.10–1.16) which is the feature-bar-setter of the whole project.
+- No direct token metric in-session. Wall-clock deltas remain the measurement.
+
+### Next
+- **Story 1.9 — Web: room list sidebar + create-room UI.** First frontend consumer of the rooms REST endpoints. The plan is essentially: add `src/Web/src/pages/HomePage.tsx` sidebar real estate showing the public catalog + the user's private rooms; a "Create room" modal wired to `POST /api/rooms`; clicking a room routes to `/rooms/:id` (empty chat area stub — actual message rendering is Story 1.14/1.16). Points: 3. **Open question for 1.9:** "my rooms" endpoint. The sidebar needs to show rooms the user is a member of regardless of visibility, but `GET /api/rooms` only returns public catalog entries. Either extend that endpoint with a `?mine=true` filter OR add a separate `GET /api/me/rooms`. Decide up front before the 1.9 plan; `GET /api/me/rooms` is cleaner (single-purpose endpoint, no query-parameter modality), and it's a 5-line addition.
+
+---

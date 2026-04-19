@@ -209,7 +209,7 @@ As an authenticated user, I want to create rooms, discover public ones, and join
 **Story Points:** 3
 **Traces to:** FR-22, FR-23, FR-24, FR-25, FR-27, FR-32
 
-**Status:** Done (commit pending)
+**Status:** Done (commit `2638183`)
 
 ---
 
