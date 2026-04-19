@@ -1142,3 +1142,111 @@ No running token total. This turn was one file-read cluster, three edits, one te
 Story 1.16 — **Web: heartbeat emitter + presence indicators**. Client half of presence, paired with the 1.15 server side. Plan: throttled activity listener (mouse/key/touch/scroll, coalesce to ≤1 heartbeat per 10–15s while tab is foregrounded), `hub.heartbeat()` wrapper invocation, presence dots in the sidebar and room member list consuming `PresenceChanged` events. Prerequisite verified: the `whenConnected()` primitive I just added is useful here too — the heartbeat emitter can gate its first tick on `await hub.whenConnected()` for free.
 
 ---
+
+### [2026-04-19 17:16 ART] Note — Insight
+
+Trying to distil what I've actually learned about where the human matters in this workflow. Once the initial design/setup pass is done (CLAUDE.md, commands, architecture constraints, stories), and assuming *velocity is the operative constraint* — which it is in a hackathon, and arguably in a lot of product work — the high-leverage human-in-the-loop interventions collapse to four:
+
+1. **Classify stories by plan-review depth needed.** Not every story deserves the same scrutiny. Some are mechanical (CRUD endpoint, wire up a prop, add a migration) and the agent's first plan is almost certainly fine; skimming it is enough. Others touch a contract boundary between subsystems, cross a role boundary (owner vs joiner, sender vs receiver), or introduce a new shared primitive — those need real review. Spending equal attention on both wastes the budget I have for the risky ones.
+2. **Pick the milestones that matter.** Not every checkpoint is a milestone. A milestone is a point where enough pieces are composed that a new *user-visible* behavior becomes possible — first two-user chat, first presence dot, first DM round-trip. Those are the moments where the cross-flow bugs surface and where "feels done" and "is done" can diverge.
+3. **Peer-review plans with AI assistance on the risky stories.** Specifically for the category-1 stories above, spend time with a second agent (claude.ai for me this weekend) on the plan *before* implementation. Both of my cross-flow bugs this weekend would have been caught here if I'd done it: "what happens when user B enters the room from the catalog, not as the owner?" is a question claude.ai asks readily when you hand it a plan; claude-code, implementing against a story, tends not to.
+4. **Smoke E2E after every milestone, with real multi-actor setups.** Not "do the unit tests pass" — I know they pass — but two browsers, two users, actually exercising the flow. Both bugs this weekend were green in the suite and red in two browsers. The cost of a 5-minute multi-browser smoke is trivial; the cost of missing one is the Saturday-1 a.m. debug session I do not want to repeat.
+
+Worth noting what's *not* on this list: reviewing every implementation diff line-by-line, hand-holding the agent through micro-decisions, writing code directly. Those were instincts from my non-agentic muscle memory. Most of that attention was wasted on this project — the implementation phase is where the agent is strongest and my marginal contribution is lowest. The four items above are where I actually move the needle.
+
+---
+
+### [2026-04-19 17:24 ART] Note — Meta
+
+Flagging Story 1.15 (Presence) as a category-1 story per the framework from the note above — heavy plan, pre-approval review required. Four connected moving pieces:
+
+- Hub with `ConcurrentDictionary<userId, PresenceInfo>`, lifecycle driven by `OnConnectedAsync` / `OnDisconnectedAsync`.
+- `Heartbeat` hub method with server-side throttle.
+- `PeriodicTimer` background sweep that demotes stale connections to AFK.
+- Status-change broadcast to the relevant peers only — lazy scope, no fan-out.
+
+These pieces compose: the dictionary feeds the timer, the timer produces transitions, transitions feed the broadcast, and the heartbeat mutates the dictionary from the hot path. Any one of them trivial in isolation; the interactions are where the bugs will live (same lesson as this weekend's cross-flow bugs). Deliberately pausing before I click "approve" on the generated plan — want to walk through it with claude.ai first, specifically to pressure-test the broadcast-scope query (how do we compute "relevant peers" without a DB call on every transition?) and the heartbeat-throttle placement (client, server, or both — and what happens when the same user has multiple tabs). Let's see.
+
+---
+
+### [2026-04-19 17:41 ART] Note — Friction
+
+**Multi-browser smoke on 1.15 surfaced two bugs.** Framework from the 17:16 note validated again: unit tests green, E2E in two browsers red.
+
+- **Presence not reliably detected.** Transitions weren't landing on the peer client under realistic conditions — still diagnosing whether it's heartbeat emission, server-side timer, or broadcast scope.
+- **Small race on page refresh (F5).** `SignalRProvider` is re-opening the connection while `RoomPage` mounts and fires `POST /api/rooms/{id}/join` immediately followed by `hub.joinRoom`, and the provider's state mutation collides with the mount chain. This is adjacent to the same class as the morning's "wait for Connected before joinRoom" fix, but on a different seam — the provider lifecycle vs the page mount effect.
+
+**Fix-proposal patterns keep reinforcing.** For both issues, claude.ai handed me a proposal and I went with it. And I notice I still haven't hit a case where I disagreed with a fix proposal *and* genuinely understood the trade-off well enough to defend an alternative. The honest read: my ability to spot which class of problem is brewing ("this is a lifecycle race", "this is a cross-flow gap") is holding up, but my independent judgment on *how to fix it* is either agreeing with the first plausible proposal or deferring because the trade-off space is larger than I can evaluate in the moment. Not a problem yet — the proposals have been solid — but worth flagging so I can notice if and when it breaks. If I *always* agree, one of two things is true: claude.ai is genuinely picking the best option each time (possible), or I've stopped searching for alternatives (also possible). Probably healthier to force myself to articulate the rejected alternatives even when I agree, just to keep the muscle alive.
+
+---
+
+### [2026-04-19 17:41 ART] Note — Insight
+
+Maybe obvious, maybe repeating myself, but worth stating plainly since it keeps proving out: **plan-mode is the single highest-leverage guardrail in this workflow.** Not equally for every story — mechanical stories get almost no lift from it — but for anything that touches architecture, shared structure, or a design boundary, and *especially* for bug fixes, it is the difference between "agent ships the first plausible patch" and "agent ships the right patch". Bug fixes in particular have a shape claude-code is locally correct about and globally suboptimal about more often than implementation work does, because a bug fix is almost by definition sitting at a seam the original plan didn't anticipate. Forcing the agent to surface its plan *before* editing — and running that plan through a second opinion when the story or fix is non-trivial — has caught every cross-flow concern this weekend that would otherwise have gone to smoke to be discovered.
+
+---
+
+## [2026-04-19 14:45 ART] — Story 1.16: heartbeat emitter + presence indicators
+
+**Story:** 1.16 — Web: heartbeat emitter + presence indicators
+**Commit:** `9bb2433` — feat(web,api,realtime): heartbeat emitter + presence indicators + /members endpoint (Story 1.16).
+
+### What was built
+Client half of presence, paired with 1.15's server side. A throttled activity listener emits `hub.heartbeat()` at most once every 12s while the tab is foregrounded and the window has focus. A new singleton presence store lives inside `SignalRProvider` as a `ReadonlyMap<userId, { status, at }>`; `usePresence(userId)` and `usePresenceMap()` expose it to consumers. Presence glyphs (● online / ◐ AFK / ○ offline) now render next to the sender username in every message row, and a new `MembersPanel` on `RoomPage` lists every room member with a presence dot and a stable sort (Owner → Admin → Member, online-first, alphabetical). A small new backend endpoint `GET /api/rooms/{id}/members` feeds the panel, gated on membership with 403 ProblemDetails for non-members.
+
+### ADLC traceability
+Satisfies FR-12 (online indicator), FR-13 (AFK indicator), FR-14 (activity-driven), FR-50 (presence dots in the UI), NFR-5 (<2s render latency — a `PresenceChanged` event triggers a single `setState` on the provider and all consumers re-read the context in the same microtask). All 4 acceptance criteria ticked. **AC3 "per contact"** was explicitly deferred to Story 2.1 with the developer's approval — no Friendship entity exists yet; when 2.1 lands, the contact list will reuse the same `PresenceBadge` and `usePresence` hook for free. Decisions §8 ("lazy push to relevant peers only") was already satisfied by 1.15's SignalR-group-scoped broadcast; the client's only responsibility was to consume what it receives.
+
+### Non-obvious decisions
+
+- **Decision:** Expose presence as a `ReadonlyMap` via context + `usePresence(userId)` / `usePresenceMap()` hooks. Use a single `useState<Map>` at the provider with a new Map on every event.
+  **Alternatives considered:** (a) `useSyncExternalStore` backed by a mutable Map + fine-grained subscriptions per userId; (b) one atom per user in an external store (Zustand/Jotai); (c) a React Context per userId.
+  **Why:** we expect O(10) visible user rows and presence events at human pace (a few per minute per room). The simple "new Map on each update" path re-renders all presence consumers on every event, which is fine at this scale and keeps the whole store observable from React without introducing a subscription framework. If presence traffic later dominates, swap the store implementation — the `usePresence` hook contract doesn't change.
+
+- **Decision:** `MembersPanel` reads the whole presence map once (via `usePresenceMap()`) and does pure sorting in a `useMemo`. No per-row hook.
+  **Alternatives considered:** per-row `usePresence(member.userId)` inside a `.map()`.
+  **Why:** per-row hooks in a loop would violate React's rules of hooks (variable count across renders as members are added/removed). Reading the full map once and computing sort purely is both correct and more efficient — one re-render triggers a full re-sort, which is what we want for "online-first within role group".
+
+- **Decision:** `useHeartbeat` fires at most once per 12s (midpoint of CLAUDE.md's 10–15s window), pauses while `document.hidden` OR `!document.hasFocus()`, and resumes immediately on re-foreground (not waiting for the next activity event).
+  **Alternatives considered:** tick on a `setInterval(12_000)` regardless of activity; emit on every event and let the server dedupe; rely on `beforeunload`/`pagehide` to report "going AFK".
+  **Why:** the task briefing and CLAUDE.md §2 are clear — browsers hibernate hidden tabs and cannot self-report AFK, so the server infers inactivity from absence of heartbeats. We only need to emit a *truthful* "I am active" signal while active. A `setInterval` unbounded by activity would defeat that; per-event emission would flood the wire and load the hub; `beforeunload` is unreliable. The activity-gated + foreground-gated throttle is the cheapest correct path.
+
+- **Decision:** The new `GET /api/rooms/{id}/members` endpoint returns the full roster, no pagination. Code comment flags NFR-2 (1000-member rooms) as the future pagination trigger.
+  **Alternatives considered:** cursor-based pagination from day one.
+  **Why:** current rooms are small; adding cursor semantics now would be premature and the sort key isn't yet decided (role + username? joinedAt? a presence-aware sort runs client-side regardless). Leaving a clear comment and a single flat endpoint is the right tradeoff for MVP pace.
+
+- **Decision:** Mount `useHeartbeat` inside `SignalRProvider` rather than per-route.
+  **Alternatives considered:** mount per route that wants presence (e.g., only `RoomPage`).
+  **Why:** a single heartbeat loop per authenticated session is the semantic we want — the user's presence should reflect their app-wide activity, not just their activity on the current route. The provider owns the hub lifecycle, so it's the correct scope.
+
+### Friction and blockers
+
+- **One self-correction during implementation: hook-in-loop violation in `MembersPanel`.** My first draft had `usePresence(member.userId)` called inside a `.map()` — instant rules-of-hooks violation. Caught it before running tests. The refactor to `usePresenceMap()` + pure sort is strictly simpler, and the test expectations didn't change. Worth banking: whenever I find myself wanting "hook keyed by row", I should reach for "context read of the whole map" first and only sub-divide if there's measurable re-render pressure.
+
+- **Test ergonomics.** Four test suites to keep in sync with the FakeHub shape is starting to feel like a small tax. Every new hub method (now: `heartbeat`, `whenConnected`, `onPresenceChanged`) forces a FakeHub update plus a subtle risk that a test file doesn't get the update. Today I only needed to extend `RoomPage.test.tsx`; `useHeartbeat.test.tsx` has its own minimal FakeHub. If this keeps growing I should lift the FakeHub into a shared test utility module. Noting as a future refactor when we have a third or fourth test file needing the same class.
+
+- **No backend friction.** The `/members` endpoint was a 30-line handler matching the `GetMessages` pattern exactly. All three tests passed on first real run after implementation. The explicit "reuse the GetMessages membership-check pattern" in the user's scope notes made this effectively copy-paste-with-adjustment.
+
+- **UI layout decision fell out naturally.** `RoomPage` already had a 2-column grid (messages | sidebar). Inserting `MembersPanel` as a flex child of the messages section kept the Sidebar intact and the layout responsive (`md:block` hides the panel on narrow viewports). No redesign needed.
+
+### Verification evidence
+- Tests: 116 passing (97 backend — including 3 new `Members_*` tests — + 19 frontend including 6 new `useHeartbeat` + 2 new `RoomPage` presence tests).
+- Build: ✅ `dotnet build` + `npm run build` both clean.
+- `docker compose up -d --build`: ✅ api + web recreated cleanly. `docker logs hackaton-api | grep Presence` shows the sweep service live.
+- End-to-end check: `/health` → 200. Manual two-browser smoke delegated to the developer; the test pair `PresenceChanged updates the sender badge on rendered messages` and `MembersPanel renders fetched members sorted ..., re-sorts on PresenceChanged` model the real-time contract in-process so a regression would fail fast in CI.
+
+### Reflection
+The story's sizing (2 points) was honest only because we deferred the "per contact" clause — without that it would have been at least 3 and required an entity-design pass. That's the right kind of defer: the same `PresenceBadge` and `usePresence` hook will drop into 2.1 verbatim, so the work isn't duplicated, it's just scoped. The general principle worth banking: when a story references multiple UI surfaces and only one of them exists yet, ship the parts that land cleanly on existing surfaces and document which surface the remaining AC will light up when the surface arrives. Alternative — building the contact list as a placeholder purely to "satisfy" AC3 — would have been worse: dead code, empty state, UI debt. Naming the deferral in the Status line makes it auditable, not hidden.
+
+### Time
+- **Agent wall clock:** ~25 min from `/add-feature 1.16` approval to commit `9bb2433`. Includes the one hook-in-loop self-correction.
+- **Equivalent human work:** ~3–4 hours for a senior dev with existing React + SignalR familiarity. Breakdown: ~15 min reading current surfaces (ChatHubClient, SignalRProvider, Sidebar, MessageList, RoomPage); ~30 min designing the presence store + the membership endpoint contract + the sort semantics; ~45 min implementation across 8 files (backend 2, frontend 6); ~75 min tests (the useHeartbeat timing tests in particular — mocking `visibilityState`, `hasFocus`, fake timers, and `act()` around event dispatch is about 20 min of fiddling per test method the first time); ~30 min verification + stories.md + commit. The test-writing phase dominates the estimate — the feature is mechanically straightforward once the design is settled.
+- **(c) developer-time invested:** ~10 min. Main input was the scope decision (Option B vs A/C) plus 6 precise constraints in the follow-up ("require RoomMember for /members, 403 ProblemDetails, full list OK, sort Owner→Admin→Member+online-first+alpha, 12s, ◐, no manual seeding"). That 10 minutes of constraint-setting is the single most load-bearing input of the story — without the "require member for /members" constraint I'd probably have shipped an unguarded endpoint, and without the sort spec the panel would have fallen to default insertion order.
+
+### Cost so far (rough)
+Single-digit-thousand output tokens across 13 file edits + tests + verification. Nothing near context pressure.
+
+### Next
+Story 2.1 — **Friend requests + accept/remove**. First real new entity since 1.1 (Friendship as a relation on User). Prerequisites: EF migration design (self-referencing M:N with state, or a dedicated Friendship table — CLAUDE.md doesn't dictate), REST surface for request/accept/decline/remove, and a SignalR notification for the recipient when a new request arrives. The `ContactsPanel` UI lands as part of 2.1 and will immediately get presence dots for free via the existing `PresenceBadge` + `usePresence`. First design-heavy story in a while; worth a careful plan.
+
+---

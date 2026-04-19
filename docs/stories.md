@@ -386,7 +386,7 @@ As a user, I want my presence to reflect actual activity and to see others' pres
 **Labels:** web, realtime
 **Story Points:** 2
 **Traces to:** FR-12, FR-13, FR-14, FR-50, NFR-5
-**Status:** Done (commit pending). "Per contact" deferred to Story 2.1 — no Friendship entity yet. Implemented "per room member" via new `MembersPanel` on `RoomPage` (new `GET /api/rooms/{id}/members` endpoint, member-check gated) and presence dot next to sender usernames in `MessageList`. Members sorted Owner → Admin → Member, online-first, then alphabetical.
+**Status:** Done (commit 9bb2433). "Per contact" deferred to Story 2.1 — no Friendship entity yet. Implemented "per room member" via new `MembersPanel` on `RoomPage` (new `GET /api/rooms/{id}/members` endpoint, member-check gated) and presence dot next to sender usernames in `MessageList`. Members sorted Owner → Admin → Member, online-first, then alphabetical.
 
 ---
 
