@@ -186,7 +186,7 @@ As the backend, I need the room model so room features (creation, listing, membe
 **Story Points:** 2
 **Traces to:** FR-22, FR-23, FR-29, FR-30, FR-31, FR-32
 
-**Status:** Done (commit pending)
+**Status:** Done (commit `f2c9b9d`)
 
 ---
 
