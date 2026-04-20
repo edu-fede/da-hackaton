@@ -2,6 +2,8 @@
 
 DataArt Hackathon 2026 submission — an experiment in Agentic Development Life Cycle (ADLC).
 
+> **Scope note.** This submission delivers an MVP with the core chat functionality (auth, rooms, real-time messaging, presence, message edit/delete/reply). Several task features are intentionally out of scope for this submission — see **Feature coverage** below for the per-requirement status. The focus of the experiment was the ADLC methodology, not exhaustive feature completion.
+
 ## Running the app
 
 ```bash
@@ -117,9 +119,37 @@ curl -s http://localhost:8080/health | jq    # API health + DB connectivity
 - SignalR for real-time messaging and presence
 - Docker Compose
 
+## Feature coverage
+
+Per-feature status against the task requirements. MVP bar (core chat functionality) is green; several non-MVP features are intentionally deferred.
+
+| Feature | Status | Notes |
+|---|---|---|
+| User registration & login | ✅ | Email + username unique, password policy enforced |
+| Session-based auth | ✅ | HttpOnly cookie, multi-session, per-session logout |
+| Password change | ⏭️ | |
+| Account deletion (soft-delete + cascade) | ⏭️ | Out of scope for this submission |
+| Public rooms (create / list / join / leave) | ✅ | Catalog with substring search |
+| Private rooms | ✅ | Invisible from public catalog; members see them |
+| Real-time messaging | ✅ | SignalR + in-memory `Channel<T>` + BackgroundService persistence |
+| Message history (infinite scroll) | ✅ | Cursor pagination, <200ms at 10K messages |
+| Reconnect with watermark resync | ✅ | Per-room sequence watermarks stored in localStorage |
+| Message edit / delete / reply | ⚠️ | Backend + broadcasts working; UI hover interaction pending verification |
+| Presence (online / AFK / offline) | ✅ | Server-authoritative AFK inference, multi-tab aware |
+| Members list with role & status | ✅ | Initial snapshot + live `PresenceChanged` deltas |
+| Friend requests / contacts | ⏭️ | Out of scope for this submission |
+| 1-to-1 direct messages | ⏭️ | Out of scope (modeled as "rooms of 2"; wiring deferred) |
+| Room moderation (admin ban/kick) | ⏭️ | Out of scope |
+| File attachments | ⏭️ | Out of scope |
+| Unread message indicators | ⏭️ | Out of scope |
+| Jabber/XMPP federation | ⏭️ | Out of scope (task-waivable extension) |
+
+**Legend:** ✅ working end-to-end · ⚠️ partial or verification pending · ⏭️ deliberately out of scope · ❌ broken
+
 ## Known limitations (production gaps)
 
 - **No rate limiting on auth endpoints.** `/api/auth/register` and `/api/auth/login` accept unbounded traffic from any caller. Production deployment would add per-IP throttling via ASP.NET Core's built-in `AddRateLimiter`. Out of scope for the hackathon by explicit decision (see §6 of the decisions block in `docs/stories.md`).
+- **Extended browser-tab hibernation edge case on presence.** If a tab backgrounds for hours and the browser fully hibernates the JS runtime, the heartbeat loop stops emitting; the user is correctly marked AFK server-side. On wake, the user remains visible as AFK to peers until the next activity event (mouse/key/scroll) nudges the heartbeat. Root cause is structural (browsers hibernate tabs, client cannot self-report "I'm back"). Accepted tradeoff for MVP.
 
 ## Notes
 
