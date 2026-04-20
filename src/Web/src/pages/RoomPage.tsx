@@ -73,9 +73,14 @@ export function RoomPage() {
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col">
       <header className="flex items-center justify-between border-b border-slate-800 px-6 py-4">
         <div>
-          <h1 className="text-lg font-semibold tracking-tight">
-            {room?.name ?? 'Room'}
-            <span data-testid="room-id" className="ml-3 text-slate-500 font-mono text-xs">{id}</span>
+          <h1 className="flex items-center gap-2 text-lg font-semibold tracking-tight">
+            <span
+              className={room?.visibility === 'Private' ? 'text-slate-500' : 'text-slate-400'}
+              aria-hidden="true"
+            >
+              {room?.visibility === 'Private' ? '🔒' : '#'}
+            </span>
+            <span>{room?.name ?? 'Room'}</span>
           </h1>
           {room?.description && (
             <p className="text-slate-400 text-xs mt-0.5">{room.description}</p>

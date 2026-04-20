@@ -196,6 +196,12 @@ describe('RoomPage', () => {
     vi.clearAllMocks();
   });
 
+  test('does not render the room GUID in the header', async () => {
+    renderRoom();
+    await waitFor(() => expect(screen.getAllByTestId('message-row')).toHaveLength(3));
+    expect(screen.queryByText(ROOM_ID)).not.toBeInTheDocument();
+  });
+
   test('renders seeded messages fetched from history endpoint', async () => {
     renderRoom();
 
